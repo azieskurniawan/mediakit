@@ -228,6 +228,158 @@ class LivestreamPanel(QWidget):
         group.setLayout(layout)
         return group
     
+    def _create_schedule_group(self) -> QGroupBox:
+        """Create schedule management group."""
+        group = QGroupBox("⏰ Scheduled Streaming")
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        
+        # Info label
+        info_label = QLabel(
+            "Create schedules to automatically start livestreams at specific times.\n"
+            "Schedules can be one-time or recurring (daily/weekly)."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #8892b0; font-size: 11px; padding: 5px;")
+        layout.addWidget(info_label)
+        
+        # Next schedule info
+        self._next_schedule_label = QLabel()
+        self._next_schedule_label.setObjectName("nextScheduleInfo")
+        self._next_schedule_label.setWordWrap(True)
+        layout.addWidget(self._next_schedule_label)
+        self._update_next_schedule_info()
+        
+        # Buttons row
+        button_layout = QHBoxLayout()
+        
+        # Create schedule button
+        create_schedule_btn = QPushButton("➕ Create Schedule")
+        create_schedule_btn.setObjectName("scheduleButton")
+        create_schedule_btn.clicked.connect(self._create_schedule)
+        button_layout.addWidget(create_schedule_btn)
+        
+        # Manage schedules button
+        manage_schedules_btn = QPushButton("📋 Manage Schedules")
+        manage_schedules_btn.setObjectName("scheduleButton")
+        manage_schedules_btn.clicked.connect(self._manage_schedules)
+        button_layout.addWidget(manage_schedules_btn)
+        
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
+        
+        group.setLayout(layout)
+        return group
+    
+    def _update_next_schedule_info(self) -> None:
+        """Update next schedule information."""
+        schedules = self._stream_scheduler.get_enabled_schedules()
+        
+        if not schedules:
+            self._next_schedule_label.setText("No scheduled streams yet.")
+            self._next_schedule_label.setStyleSheet("color: #8892b0; padding: 5px;")
+            return
+        
+        # Find next schedule
+        next_schedule = None
+        next_time = None
+        
+        for schedule in schedules:
+            if schedule.next_run:
+                try:
+                    run_time = datetime.fromisoformat(schedule.next_run)
+                    if next_time is None or run_time < next_time:
+                        next_time = run_time
+                        next_schedule = schedule
+                except (ValueError, TypeError):
+                    pass
+        
+        if next_schedule and next_time:
+            # Calculate time until next run
+            now = datetime.now()
+            delta = next_time - now
+            
+            if delta.total_seconds() > 0:
+                if delta.days > 0:
+                    time_str = f"in {delta.days} day{'s' if delta.days > 1 else ''}"
+                else:
+                    hours = delta.seconds // 3600
+                    minutes = (delta.seconds % 3600) // 60
+                    if hours > 0:
+                        time_str = f"in {hours}h {minutes}m"
+                    else:
+                        time_str = f"in {minutes} minute{'s' if minutes > 1 else ''}"
+                
+                self._next_schedule_label.setText(
+                    f"📅 Next: {next_schedule.name}\n"
+                    f"   {next_time.strftime('%d %b %Y at %H:%M')} ({time_str})"
+                )
+                self._next_schedule_label.setStyleSheet(
+                    "color: #00d4ff; font-weight: bold; padding: 8px; "
+                    "background-color: rgba(0, 212, 255, 0.1); border-radius: 5px;"
+                )
+            else:
+                self._next_schedule_label.setText("No upcoming scheduled streams.")
+                self._next_schedule_label.setStyleSheet("color: #8892b0; padding: 5px;")
+        else:
+            self._next_schedule_label.setText("No upcoming scheduled streams.")
+            self._next_schedule_label.setStyleSheet("color: #8892b0; padding: 5px;")
+    
+    def _create_schedule(self) -> None:
+        """Create a new schedule."""
+        from ui.schedule_dialog import ScheduleDialog
+        from core.stream_scheduler import StreamSchedule
+        import uuid
+        
+        dialog = ScheduleDialog(parent=self)
+        if dialog.exec():
+            # Get schedule data
+            data = dialog.get_schedule_data()
+            
+            # Get current stream settings
+            stream_settings = self.get_settings()
+            
+            # Get current media config (would need to be passed from parent)
+            # For now, store empty config - will be filled when schedule triggers
+            media_config = {}
+            
+            # Create schedule
+            schedule = StreamSchedule(
+                id=str(uuid.uuid4()),
+                name=data['name'],
+                enabled=True,
+                start_datetime=data['start_datetime'],
+                recurrence=data['recurrence'],
+                weekdays=data['weekdays'],
+                duration_minutes=data['duration_minutes'],
+                media_config=media_config,
+                stream_settings=stream_settings
+            )
+            
+            # Add to scheduler
+            self._stream_scheduler.add_schedule(schedule)
+            
+            # Update info
+            self._update_next_schedule_info()
+            
+            QMessageBox.information(
+                self,
+                "Schedule Created",
+                f"Schedule '{data['name']}' has been created!\n\n"
+                f"It will automatically start streaming at the scheduled time."
+            )
+    
+    def _manage_schedules(self) -> None:
+        """Open schedule management window."""
+        from ui.schedule_list_widget import ScheduleListWidget
+        
+        dialog = ScheduleListWidget(self._stream_scheduler, self)
+        dialog.exec()
+        
+        # Update info after closing
+        self._update_next_schedule_info()
+    
     def _toggle_stream_key_visibility(self, checked: bool) -> None:
         """Toggle stream key visibility."""
         if checked:
