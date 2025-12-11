@@ -39,9 +39,14 @@ Thumbs.db
 # Config (keep template, ignore user data)
 ffmpeg_exporter/config/settings.json
 ffmpeg_exporter/config/schedules.json
+config/settings.json
 
 # Logs
 *.log
+
+# Project specific
+temp/
+output/
 
 # FFmpeg output
 *.mp4
@@ -56,3 +61,7 @@ ffmpeg_exporter/config/schedules.json
 *.temp
 concat_*.txt
 
+# FFmpeg temporary files (but keep documentation)
+!requirements.txt
+!README.md
+!*.md
