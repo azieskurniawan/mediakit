@@ -1,0 +1,274 @@
+---
+alwaysApply: true
+---
+# 🎬 Cursor Rules — Python Desktop FFmpeg Exporter App
+
+## 📌 Project Goal
+Create a **Python desktop application** to export videos using **FFmpeg**, combining visuals + audio + overlays, fully configurable through a GUI.
+
+The application must include:
+
+- Media management (video directory, cover video, static image, audio directory)
+- Effects (custom logo, text overlay)
+- Preview layout
+- Export dialog (resolution, fps, codec, bitrate, filename, destination)
+- Settings page (FFmpeg path)
+- **Real-time FFmpeg logging during export**
+
+---
+
+# 🧱 Tech Stack & Architecture
+
+## Language & Dependencies
+- Python **3.11+**
+- **PySide6** or PyQt6
+- `subprocess` for ffmpeg/ffprobe execution
+- Avoid heavy dependencies unless required
+
+---
+
+# 📂 Project Structure
+
+```
+ffmpeg_exporter/
+  app.py
+  core/
+    media_manager.py
+    ffmpeg_builder.py
+    audio_utils.py
+    settings_manager.py
+  ui/
+    main_window.py
+    media_panel.py
+    effects_panel.py
+    preview_panel.py
+    export_dialog.py
+    settings_dialog.py
+  resources/
+    icons/
+  config/
+    settings.json
+```
+
+---
+
+# 🎨 UI & Feature Rules
+
+## 1. Media Panel
+
+### Visuals
+Users must be able to choose between:
+
+### **A. Video Directory**
+- Select a folder containing **multiple videos**
+- Export must use **random order**
+- Optional **cover video**:
+  - Always placed **first**
+  - **Never looped**
+- Remaining videos:
+  - Can be looped or repeated to match total audio duration
+
+### **B. Static Image**
+- Single image used as background
+- Must loop to match audio duration
+- FFmpeg should generate a video like:
+  ```
+  ffmpeg -loop 1 -i image.png -t DURATION ...
+  ```
+
+---
+
+## Audio Section
+- Select a **directory containing multiple audio files**
+- On export:
+  - Pick **one random audio file**, OR
+  - (Optional) concatenate randomly
+- Provide button **“Calculate Total Duration”**
+  - Use ffprobe
+  - Show readable result (HH:MM:SS)
+
+---
+
+# 2. Effects Panel
+
+## Custom Logo
+- Select image file (PNG/JPG)
+- Controls:
+  - Size (%)
+  - Position presets (TL/TR/BL/BR/Center)
+  - X/Y offset sliders
+
+FFmpeg overlay example:
+```
+overlay=x=10:y=10
+```
+
+## Text Overlay
+- Text content
+- Font file (`.ttf`)
+- Font size
+- Font color
+- Position presets
+- FFmpeg `drawtext` example:
+```
+drawtext=fontfile=/path.ttf:text='Sample':fontsize=40:fontcolor=white:x=100:y=100
+```
+
+All overlay settings stored in **dataclasses**.
+
+---
+
+# 3. Preview Panel
+- Show approximate preview:
+  - Base video/image
+  - Logo overlay
+  - Text overlay
+- Playback:
+  - Minimal: play selected video
+  - Optional: generate temporary preview via ffmpeg
+
+Preview **does not need** to be exact, only representative.
+
+---
+
+# 4. Export Dialog
+
+### Required fields:
+- Preset: **YouTube 1080p (FHD)**
+- Resolution: default **1920x1080**
+- FPS: default **30**
+- Codec:
+  - Video: **H.264 / libx264**
+  - Audio: **AAC**
+- Bitrate:
+  - CRF mode or manual bitrate (default 8000 kbps)
+- Filename input
+- Output directory selection
+
+### Buttons:
+- **Cancel**
+- **Export Video**
+
+---
+
+# 🚀 Export Behavior Rules
+
+## FFmpeg Builder (`ffmpeg_builder.py`)
+Responsible for assembling:
+
+1. Image → looped video OR concatenated video list
+2. Cover video placement
+3. Randomization of input media
+4. Audio selection
+5. Overlays (logo + text)
+6. Encoding parameters
+7. Output settings
+
+---
+
+# ⭐ **Real-Time FFmpeg Logging (MANDATORY)**
+
+During export, show **all logs from ffmpeg**, updated live.
+
+### Implementation Requirements:
+- Use:
+```
+process = subprocess.Popen(
+    cmd,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+    bufsize=1
+)
+```
+
+- Read logs line-by-line:
+```
+for line in process.stdout:
+    log_widget.append(line)
+```
+
+- Logs must appear **in real-time** in a dedicated UI window
+- Must handle:
+  - Scrollable log output
+  - Optional "Cancel Export" button
+
+If ffmpeg returns non-zero exit code:
+- Show error dialog
+- Display full log in the UI
+
+---
+
+# 5. Settings Dialog
+
+### Fields:
+- FFmpeg executable path (required)
+- FFprobe path (optional)
+
+Stored in:
+```
+config/settings.json
+```
+
+If ffmpeg is missing:
+- Block export
+- Ask user to select path
+
+---
+
+# 6. FFmpeg Rules
+
+## A. Video Concatenation (directory mode)
+Use concat file when needed:
+```
+file 'cover.mp4'
+file 'random_video1.mp4'
+file 'random_video2.mp4'
+```
+
+## B. Image Mode
+```
+ffmpeg -loop 1 -i image.png -i audio.mp3 -c:v libx264 -t AUDIODURATION ...
+```
+
+## C. Overlays
+Applied in one filter_complex graph.
+
+---
+
+# 7. Coding Style Requirements
+
+- Use **type hints**
+- Use **dataclasses**
+- Follow **PEP8**
+- Separate UI logic and processing logic
+- All user errors shown in message dialogs
+- Functions must be small, modular, testable
+
+---
+
+# 8. Implementation Order for Cursor
+
+1. Setup project folder
+2. Implement `settings_manager.py`
+3. Build base UI with navigation tabs
+4. Implement Media Panel
+5. Implement Effects Panel
+6. Implement Preview Panel
+7. Implement Export Dialog
+8. Build `ffmpeg_builder.py`
+9. Implement **real-time ffmpeg logging window**
+10. Refine UI and add error handling
+
+---
+
+# 9. Optional Enhancements (Allowed)
+- Draggable overlays
+- Audio waveform visualization
+- Auto-filename templates
+- Multiple text overlays
+- Export presets
+
+---
+
+# ✅ End of Full Rules

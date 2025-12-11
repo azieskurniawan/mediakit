@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (keep template, ignore user data)
+ffmpeg_exporter/config/settings.json
+ffmpeg_exporter/config/schedules.json
+
+# Logs
+*.log
+
+# FFmpeg output
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.flv
+*.webm
+
+# Temporary files
+*.tmp
+*.temp
+concat_*.txt
+
