@@ -216,43 +216,59 @@ class LivestreamBuilder:
             logo_input_idx = next_input_idx
             next_input_idx += 1
         
-        # Build filter complex for video overlays
-        filter_complex = self._build_filter_complex(
-            media_config, 
-            stream_settings,
-            input_is_image=False,
-            logo_input_idx=logo_input_idx
+        # Check if we can use stream copy (no overlays, no re-encoding needed)
+        has_overlays = (
+            (media_config.logo_overlay.enabled and media_config.logo_overlay.filepath) or
+            (media_config.text_overlay.enabled and media_config.text_overlay.text)
         )
         
-        # Build audio filter based on audio source mode
-        audio_filter, audio_map = self._build_audio_filter_for_stream(
-            media_config,
-            video_input_idx=0,
-            audio_input_idx=audio_input_idx
-        )
+        # Check if we need audio mixing
+        needs_audio_mixing = (media_config.audio_source == AudioSource.MIX_BOTH)
         
-        # Combine all filters
-        all_filters = []
-        if filter_complex:
-            all_filters.append(filter_complex)
-        if audio_filter:
-            all_filters.append(audio_filter)
-        
-        if all_filters:
-            cmd.extend(['-filter_complex', ";".join(all_filters)])
-            cmd.extend(['-map', '[vout]', '-map', audio_map])
-        elif filter_complex:
-            cmd.extend(['-filter_complex', filter_complex])
-            cmd.extend(['-map', '[vout]', '-map', audio_map])
+        # OPTIMIZATION: Use stream copy if possible
+        if not has_overlays and not needs_audio_mixing and media_config.audio_source == AudioSource.VIDEO_AUDIO:
+            # Pure stream copy mode - super fast!
+            cmd.extend(['-c:v', 'copy', '-c:a', 'copy'])
+            cmd.extend(['-map', '0:v', '-map', '0:a'])
         else:
-            # Simple scale
-            cmd.extend([
-                '-vf', f"scale={stream_settings.width}:{stream_settings.height}:force_original_aspect_ratio=decrease,pad={stream_settings.width}:{stream_settings.height}:(ow-iw)/2:(oh-ih)/2,fps={stream_settings.fps}"
-            ])
-            cmd.extend(['-map', '0:v', '-map', audio_map])
-        
-        # Add encoding options for streaming
-        cmd.extend(self._get_streaming_options(stream_settings))
+            # Need to re-encode
+            # Build filter complex for video overlays
+            filter_complex = self._build_filter_complex(
+                media_config, 
+                stream_settings,
+                input_is_image=False,
+                logo_input_idx=logo_input_idx
+            )
+            
+            # Build audio filter based on audio source mode
+            audio_filter, audio_map = self._build_audio_filter_for_stream(
+                media_config,
+                video_input_idx=0,
+                audio_input_idx=audio_input_idx
+            )
+            
+            # Combine all filters
+            all_filters = []
+            if filter_complex:
+                all_filters.append(filter_complex)
+            if audio_filter:
+                all_filters.append(audio_filter)
+            
+            if all_filters:
+                cmd.extend(['-filter_complex', ";".join(all_filters)])
+                cmd.extend(['-map', '[vout]', '-map', audio_map])
+            elif filter_complex:
+                cmd.extend(['-filter_complex', filter_complex])
+                cmd.extend(['-map', '[vout]', '-map', audio_map])
+            else:
+                # Simple scale
+                cmd.extend([
+                    '-vf', f"scale={stream_settings.width}:{stream_settings.height}:force_original_aspect_ratio=decrease,pad={stream_settings.width}:{stream_settings.height}:(ow-iw)/2:(oh-ih)/2,fps={stream_settings.fps}"
+                ])
+                cmd.extend(['-map', '0:v', '-map', audio_map])
+            
+            # Add encoding options for streaming
+            cmd.extend(self._get_streaming_options(stream_settings))
         
         # Duration (if specified)
         if stream_settings.duration_minutes > 0:
@@ -425,7 +441,7 @@ class LivestreamBuilder:
         else:
             # CPU encoding (x264)
             options.extend(['-c:v', 'libx264'])
-            options.extend(['-preset', 'veryfast'])  # Fast for realtime
+            options.extend(['-preset', 'ultrafast'])  # Fastest for realtime (changed from veryfast)
             options.extend(['-tune', 'zerolatency'])  # Low latency
             options.extend(['-b:v', f'{stream_settings.bitrate_kbps}k'])
             options.extend(['-maxrate', f'{stream_settings.bitrate_kbps}k'])
