@@ -1,7 +1,7 @@
 {
-    "ffmpeg_path": "C:\\ffmpeg-7.1.1-essentials_build\\bin\\ffmpeg.exe",
-    "ffprobe_path": "C:\\ffmpeg-7.1.1-essentials_build\\bin\\ffprobe.exe",
-    "last_output_dir": "C:/Users/ACER/Downloads/americano jazz/live",
-    "last_video_dir": "C:/Users/ACER/Downloads/americano jazz",
+    "ffmpeg_path": "C:/ffmpeg/bin/ffmpeg.exe",
+    "ffprobe_path": "C:/ffmpeg/bin/ffprobe.exe",
+    "last_output_dir": "D:/Data/Downloads",
+    "last_video_dir": "D:/Data/Downloads",
     "last_audio_dir": ""
 }
