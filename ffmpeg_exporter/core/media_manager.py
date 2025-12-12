@@ -345,14 +345,20 @@ class MediaManager:
             elif not self.is_valid_image(self._config.static_image):
                 errors.append("Static image file is invalid or does not exist.")
         
-        if not self._config.audio_files:
-            errors.append("No audio files selected.")
+        # Validate audio based on audio_source mode
+        if self._config.audio_source == AudioSource.VIDEO_AUDIO:
+            # Using video audio - no audio files needed
+            pass
         else:
-            # Check if all audio files exist
-            for filepath in self._config.audio_files:
-                if not os.path.isfile(filepath):
-                    errors.append(f"Audio file not found: {os.path.basename(filepath)}")
-                    break
+            # Using audio directory or mix both - need audio files
+            if not self._config.audio_files:
+                errors.append("No audio files selected.")
+            else:
+                # Check if all audio files exist
+                for filepath in self._config.audio_files:
+                    if not os.path.isfile(filepath):
+                        errors.append(f"Audio file not found: {os.path.basename(filepath)}")
+                        break
         
         # Validate loop settings
         if self._config.loop_mode == LoopMode.CUSTOM_DURATION:
