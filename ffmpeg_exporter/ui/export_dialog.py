@@ -288,7 +288,7 @@ class ExportDialog(QDialog):
         bitrate_row.addWidget(bitrate_label)
         self._bitrate_spin = QSpinBox()
         self._bitrate_spin.setRange(500, 100000)
-        self._bitrate_spin.setValue(8000)
+        self._bitrate_spin.setValue(4000)  # Default bitrate
         bitrate_row.addWidget(self._bitrate_spin)
         bitrate_row.addStretch()
         bitrate_layout.addLayout(bitrate_row)

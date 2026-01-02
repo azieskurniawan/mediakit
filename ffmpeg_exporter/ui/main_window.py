@@ -5,26 +5,32 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTabWidget, QLabel, QStatusBar, QMessageBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QIcon
 
 from ui.media_panel import MediaPanel
 from ui.effects_panel import EffectsPanel
+from ui.text_timeline_panel import TextTimelinePanel
 from ui.preview_panel import PreviewPanel
 from ui.export_dialog import ExportDialog
 from ui.settings_dialog import SettingsDialog
 from ui.livestream_panel import LivestreamPanel
 from ui.job_monitor_window import JobMonitorWindow
+from ui.enhanced_panel import EnhancedPanel
 from core.settings_manager import SettingsManager
 from core.media_manager import MediaManager, MediaConfig, LoopMode
 from core.job_manager import JobManager, JobType
 from core.ffmpeg_builder import FFmpegBuilder, ExportSettings
 from core.livestream_builder import LivestreamBuilder, LivestreamSettings
 from core.stream_scheduler import StreamScheduler, StreamSchedule
+from core.video_enhancer import VideoEnhancer, EnhanceSettings
 
 
 class MainWindow(QMainWindow):
     """Main application window."""
+    
+    # Custom signal for cross-thread communication
+    enhancement_job_finished = Signal(list, int)  # job_ids, next_index
     
     def __init__(self):
         super().__init__()
@@ -34,6 +40,7 @@ class MainWindow(QMainWindow):
         self._media_manager = MediaManager()
         self._job_manager = JobManager()
         self._stream_scheduler = StreamScheduler(config_dir="ffmpeg_exporter/config")
+        self._video_enhancer = VideoEnhancer(self._settings_manager.get_ffmpeg_path())
         
         # Set scheduler callback
         self._stream_scheduler.set_trigger_callback(self._on_schedule_triggered)
@@ -41,9 +48,15 @@ class MainWindow(QMainWindow):
         # Job monitor window (created on demand)
         self._job_monitor_window = None
         
+        # Connect custom signals
+        self.enhancement_job_finished.connect(self._process_next_enhancement_job)
+        
         # Setup UI
         self._setup_ui()
         self._apply_styles()
+        
+        # Connect signals
+        self._setup_connections()
         
         # Check FFmpeg configuration
         self._check_ffmpeg_config()
@@ -161,6 +174,15 @@ class MainWindow(QMainWindow):
         # Effects tab
         self._effects_panel = EffectsPanel()
         self._tab_widget.addTab(self._effects_panel, "EFFECTS")
+        
+        # Text Timeline tab (Multi-text with timing)
+        self._text_timeline_panel = TextTimelinePanel()
+        self._tab_widget.addTab(self._text_timeline_panel, "TEXT TIMELINE")
+        
+        # Enhanced tab
+        self._enhanced_panel = EnhancedPanel(self._video_enhancer)
+        self._enhanced_panel.enhance_requested.connect(self._start_enhancement)
+        self._tab_widget.addTab(self._enhanced_panel, "ENHANCED")
         
         # Livestream tab
         self._livestream_panel = LivestreamPanel(self._settings_manager, self._stream_scheduler)
@@ -348,6 +370,14 @@ class MainWindow(QMainWindow):
             }
         """)
     
+    def _setup_connections(self) -> None:
+        """Setup signal/slot connections between panels."""
+        # Connect media panel video selection to preview panel
+        self._media_panel.video_selected.connect(self._preview_panel.load_video)
+        
+        # Connect effects panel preview request
+        self._effects_panel.preview_requested.connect(self._generate_spectrum_preview)
+    
     def _check_ffmpeg_config(self) -> None:
         """Check if FFmpeg is configured."""
         if not self._settings_manager.settings.is_ffmpeg_configured():
@@ -425,6 +455,18 @@ class MainWindow(QMainWindow):
         config.custom_duration = media_settings.get('custom_duration', 0.0)
         config.audio_multiplier = media_settings.get('audio_multiplier', 1)
         
+        # Audio layers (sound effects)
+        config.audio_layers = media_settings.get('audio_layers', [])
+        
+        # Video scale/zoom settings
+        config.video_scale_enabled = media_settings.get('video_scale_enabled', False)
+        config.video_scale_percent = media_settings.get('video_scale_percent', 150)
+        
+        # Video transition settings
+        config.transition_enabled = media_settings.get('transition_enabled', False)
+        config.transition_duration = media_settings.get('transition_duration', 1.0)
+        config.transition_type = media_settings.get('transition_type', 'fade')
+        
         # SFX on beat settings
         config.sfx_enabled = media_settings.get('sfx_enabled', False)
         config.sfx_file = media_settings.get('sfx_file', '')
@@ -435,6 +477,10 @@ class MainWindow(QMainWindow):
         effects_settings = self._effects_panel.get_settings()
         config.logo_overlay = effects_settings.get('logo_overlay', config.logo_overlay)
         config.text_overlay = effects_settings.get('text_overlay', config.text_overlay)
+        config.audio_visualizer = effects_settings.get('audio_visualizer', config.audio_visualizer)
+        
+        # Get animated text timeline settings
+        config.animated_text_timeline = self._text_timeline_panel.get_settings()
         
         # Update media manager config
         self._media_manager.config = config
@@ -531,6 +577,242 @@ class MainWindow(QMainWindow):
                 "Livestream Error",
                 f"Failed to start livestream:\n\n{str(e)}"
             )
+    
+    def _generate_spectrum_preview(self) -> None:
+        """Generate a quick preview with spectrum visualization (in background)."""
+        from PySide6.QtWidgets import QMessageBox, QProgressDialog
+        from ui.preview_generator import PreviewGenerator
+        
+        # Collect configuration
+        media_config = self._collect_media_config()
+        
+        # Validate
+        errors = self._media_manager.validate_config()
+        if errors:
+            QMessageBox.warning(
+                self,
+                "Cannot Generate Preview",
+                "Please fix these issues first:\n\n" + "\n".join(f"• {e}" for e in errors)
+            )
+            return
+        
+        # Create progress dialog
+        self._preview_progress = QProgressDialog("Preparing preview...", "Cancel", 0, 0, self)
+        self._preview_progress.setWindowTitle("Generating Preview")
+        self._preview_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._preview_progress.setMinimumDuration(0)
+        self._preview_progress.setCancelButton(None)  # No cancel for now
+        self._preview_progress.setValue(0)
+        self._preview_progress.show()
+        
+        # Create background thread
+        self._preview_thread = PreviewGenerator(
+            media_config=media_config,
+            ffmpeg_path=self._settings_manager.get_ffmpeg_path(),
+            ffprobe_path=self._settings_manager.get_ffprobe_path(),
+            parent=self
+        )
+        
+        # Connect signals
+        self._preview_thread.progress_update.connect(self._on_preview_progress)
+        self._preview_thread.preview_ready.connect(self._on_preview_ready)
+        self._preview_thread.preview_failed.connect(self._on_preview_failed)
+        
+        # Start generation
+        self._preview_thread.start()
+    
+    def _on_preview_progress(self, message: str) -> None:
+        """Handle preview progress update."""
+        if hasattr(self, '_preview_progress'):
+            self._preview_progress.setLabelText(message)
+    
+    def _on_preview_ready(self, preview_path: str) -> None:
+        """Handle preview generation completion."""
+        from PySide6.QtWidgets import QMessageBox
+        
+        if hasattr(self, '_preview_progress'):
+            self._preview_progress.close()
+        
+        # Load preview
+        self._preview_panel.load_video(preview_path)
+        
+        QMessageBox.information(
+            self,
+            "Preview Ready! 🎬",
+            "Preview with spectrum generated!\n\nClick ▶ PLAY button to view your result."
+        )
+    
+    def _on_preview_failed(self, error_message: str) -> None:
+        """Handle preview generation failure."""
+        from PySide6.QtWidgets import QMessageBox
+        
+        if hasattr(self, '_preview_progress'):
+            self._preview_progress.close()
+        
+        QMessageBox.critical(
+            self,
+            "Preview Failed",
+            f"Failed to generate preview:\n\n{error_message}"
+        )
+    
+    def _start_enhancement(self, video_paths: list, settings_dict: dict) -> None:
+        """
+        Start video enhancement jobs.
+        
+        Args:
+            video_paths: List of video paths to enhance.
+            settings_dict: Enhancement settings as dictionary.
+        """
+        from pathlib import Path
+        
+        # Create enhancement settings
+        enhance_settings = EnhanceSettings(
+            method=settings_dict['method'],
+            preset=settings_dict['preset'],
+            sharpen=settings_dict['sharpen'],
+            denoise=settings_dict['denoise'],
+            enhance_colors=settings_dict['enhance_colors'],
+            upscale_factor=settings_dict['upscale_factor'],
+            output_directory=settings_dict['output_directory'],
+            use_gpu=settings_dict.get('use_gpu', True),  # Default to True
+            bitrate_mode=settings_dict.get('bitrate_mode', 0),  # Default to Auto
+            custom_bitrate=settings_dict.get('custom_bitrate', None)
+        )
+        
+        # Create jobs for each video
+        created_jobs = []
+        for video_path in video_paths:
+            filename = Path(video_path).stem
+            output_filename = f"{filename}_enhanced.mp4"
+            output_path = str(Path(enhance_settings.output_directory) / output_filename)
+            
+            # Create job name
+            method_names = {
+                'ffmpeg_fast': 'FFmpeg Fast',
+                'ffmpeg_quality': 'FFmpeg Quality',
+                'realesrgan_2x': 'AI 2x',
+                'realesrgan_4x': 'AI 4x'
+            }
+            method_name = method_names.get(enhance_settings.method.value, 'Unknown')
+            job_name = f"Enhance: {filename} ({method_name})"
+            
+            # Build command (we'll use a custom job type)
+            # For now, store paths and settings as "command" for the job manager
+            job_data = {
+                'input_path': video_path,
+                'output_path': output_path,
+                'settings': enhance_settings
+            }
+            
+            # Create job
+            job_id = self._job_manager.create_job(
+                job_type=JobType.EXPORT,  # Use EXPORT type for now
+                name=job_name,
+                command=[],  # Empty command, we'll process differently
+                temp_files=[]
+            )
+            
+            # Store job data for processing
+            job = self._job_manager.get_job(job_id)
+            if job:
+                job.metadata = job_data
+                created_jobs.append(job_id)
+        
+        # Start processing jobs sequentially
+        if created_jobs:
+            self._enhanced_panel.set_enabled(False)
+            self._enhanced_panel.set_status(f"Processing {len(created_jobs)} video(s)...", "#64ffda")
+            self._enhanced_panel.set_progress(0)
+            
+            # Process first job
+            self._process_next_enhancement_job(created_jobs, 0)
+    
+    def _process_next_enhancement_job(self, job_ids: list, index: int) -> None:
+        """Process enhancement jobs sequentially."""
+        if index >= len(job_ids):
+            # All jobs completed
+            self._enhanced_panel.set_enabled(True)
+            self._enhanced_panel.set_status("✅ All videos enhanced!", "#64ffda")
+            self._enhanced_panel.set_progress(100)
+            
+            QMessageBox.information(
+                self,
+                "Enhancement Complete",
+                f"Successfully enhanced {len(job_ids)} video(s)!"
+            )
+            return
+        
+        job_id = job_ids[index]
+        job = self._job_manager.get_job(job_id)
+        
+        if not job or not hasattr(job, 'metadata'):
+            # Skip invalid job
+            self._process_next_enhancement_job(job_ids, index + 1)
+            return
+        
+        job_data = job.metadata
+        input_path = job_data['input_path']
+        output_path = job_data['output_path']
+        settings = job_data['settings']
+        
+        # Update UI
+        self._enhanced_panel.set_status(f"Processing video {index + 1}/{len(job_ids)}...", "#64ffda")
+        
+        # Progress callback (thread-safe using signal)
+        def progress_callback(current_frame, total_frames):
+            if total_frames > 0:
+                progress = int((current_frame / total_frames) * 100)
+                base_progress = int((index / len(job_ids)) * 100)
+                job_progress = int(progress / len(job_ids))
+                total_progress = base_progress + job_progress
+                
+                # Update UI on main thread - will be called from worker thread but that's ok for simple value
+                # We don't directly manipulate Qt objects
+                try:
+                    self._enhanced_panel.set_progress(total_progress)
+                except:
+                    pass  # Ignore threading errors
+        
+        # Start enhancement in background thread
+        import threading
+        
+        # Store reference to prevent garbage collection
+        self._current_enhancement_thread = None
+        
+        def enhance_thread():
+            try:
+                success = self._video_enhancer.enhance_video(
+                    input_path,
+                    output_path,
+                    settings,
+                    progress_callback
+                )
+                
+                # Update job status
+                if success:
+                    job.status = 'completed'
+                    print(f"✅ Enhanced: {output_path}")
+                else:
+                    job.status = 'failed'
+                    print(f"❌ Failed: {input_path}")
+                
+                # Emit signal to process next job on main thread
+                next_index = index + 1
+                self.enhancement_job_finished.emit(job_ids, next_index)
+                
+            except Exception as e:
+                import traceback
+                print(f"Enhancement error: {e}")
+                print(traceback.format_exc())
+                job.status = 'failed'
+                
+                # Continue with next job
+                next_index = index + 1
+                self.enhancement_job_finished.emit(job_ids, next_index)
+        
+        # Start thread
+        self._current_enhancement_thread = threading.Thread(target=enhance_thread, daemon=True)
+        self._current_enhancement_thread.start()
     
     def _on_schedule_triggered(self, schedule: StreamSchedule) -> None:
         """

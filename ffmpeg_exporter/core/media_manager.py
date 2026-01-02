@@ -39,6 +39,19 @@ class OverlayPosition(Enum):
     CUSTOM = "custom"
 
 
+class VisualizerStyle(Enum):
+    """Audio visualizer style options."""
+    CUSTOM_BARS = "custom_bars"              # Custom Python renderer (BEST!)
+    WAVEFORM_LINE = "waveform_line"          # showwaves mode=line
+    WAVEFORM_POINT = "waveform_point"        # showwaves mode=point
+    WAVEFORM_P2P = "waveform_p2p"            # showwaves mode=p2p
+    SPECTRUM_BARS = "spectrum_bars"          # showfreqs mode=bar (limited control)
+    SPECTRUM_LINE = "spectrum_line"          # showfreqs mode=line
+    SPECTROGRAM = "spectrogram"              # showspectrum
+    MUSICAL_CQT = "musical_cqt"              # showcqt
+    STEREO_SCOPE = "stereo_scope"            # avectorscope
+
+
 @dataclass
 class LogoOverlay:
     """Logo overlay settings."""
@@ -159,6 +172,295 @@ class TextOverlay:
 
 
 @dataclass
+class AudioVisualizerConfig:
+    """Audio visualizer settings."""
+    enabled: bool = False
+    style: VisualizerStyle = VisualizerStyle.CUSTOM_BARS  # Default to custom renderer!
+    color: str = "#3b82f6"  # Blue color
+    min_db: int = -90  # Minimum dB level
+    max_db: int = 200  # Maximum dB level
+    x_position: int = 0  # X coordinate
+    y_position: int = 880  # Y coordinate (bottom of 1080p)
+    width: int = 1920  # Visualizer width
+    height: int = 200  # Visualizer height
+    bar_count: int = 50  # Number of bars (for spectrum styles)
+    
+    def get_visualizer_filter(self, audio_input: str = "0:a") -> str:
+        """
+        Generate FFmpeg audio visualizer filter string.
+        
+        Args:
+            audio_input: Audio input stream reference (e.g., "0:a", "[aout]")
+            
+        Returns:
+            FFmpeg filter string for audio visualization.
+            Returns empty string if using custom Python renderer.
+        """
+        if not self.enabled:
+            return ""
+        
+        # Custom bars uses Python renderer, not FFmpeg filter
+        if self.style == VisualizerStyle.CUSTOM_BARS:
+            return ""  # Will be handled separately
+        
+        # Ensure audio_input has proper brackets
+        if not audio_input.startswith('['):
+            audio_input = f"[{audio_input}]"
+        
+        # Convert hex color to FFmpeg format (0xRRGGBB)
+        color_hex = self.color.lstrip('#')
+        ffmpeg_color = f"0x{color_hex}"
+        
+        size = f"{self.width}x{self.height}"
+        
+        # Build filter based on style
+        if self.style == VisualizerStyle.WAVEFORM_LINE:
+            return f"{audio_input}showwaves=s={size}:mode=line:colors={ffmpeg_color}:rate=30[viz]"
+        
+        elif self.style == VisualizerStyle.WAVEFORM_POINT:
+            return f"{audio_input}showwaves=s={size}:mode=point:colors={ffmpeg_color}:rate=30[viz]"
+        
+        elif self.style == VisualizerStyle.WAVEFORM_P2P:
+            return f"{audio_input}showwaves=s={size}:mode=p2p:colors={ffmpeg_color}:rate=30[viz]"
+        
+        elif self.style == VisualizerStyle.SPECTRUM_BARS:
+            # Simple waveform bars (showwaves mode=cline) for EXACT bar count control
+            # showfreqs does NOT support exact bar count - it shows all frequencies
+            # Alternative: use showwaves which is simpler but controllable
+            # For EXACT bars, we need custom Python renderer (feature request!)
+            colors_gradient = f"{ffmpeg_color}|{ffmpeg_color}|{ffmpeg_color}"
+            # Note: FFmpeg showfreqs shows ALL frequency bins, cannot limit to exact count
+            # This is a limitation of FFmpeg filters
+            return f"{audio_input}showwaves=s={size}:mode=cline:colors={ffmpeg_color}:rate=30[viz]"
+        
+        elif self.style == VisualizerStyle.SPECTRUM_LINE:
+            # Frequency line graph with solid color
+            colors_gradient = f"{ffmpeg_color}|{ffmpeg_color}|{ffmpeg_color}"
+            win_size = min(4096, max(512, self.bar_count * 40))
+            return f"{audio_input}showfreqs=s={size}:mode=line:colors={colors_gradient}:fscale=log:win_size={win_size}:rate=30[viz]"
+        
+        elif self.style == VisualizerStyle.SPECTROGRAM:
+            # Advanced spectrogram with custom color scheme
+            # Color modes: channel, intensity, rainbow, moreland, nebulae, fire, fiery, fruit, cool, magma, green, viridis, plasma, cividis, terrain
+            # Use intensity for custom color, or preset schemes
+            # Check if custom color or use preset
+            if self.color in ['#3b82f6', '#ef4444', '#10b981']:
+                # Custom color - use intensity mode with gain
+                gain = 2.0  # Boost visibility
+                return f"{audio_input}showspectrum=s={size}:mode=combined:color=intensity:scale=log:slide=scroll:fscale=log:saturation=1:gain={gain}:rate=30[viz]"
+            else:
+                # For other colors, use fire/rainbow presets for best effect
+                return f"{audio_input}showspectrum=s={size}:mode=combined:color=fire:scale=log:slide=scroll:fscale=log:saturation=1:rate=30[viz]"
+        
+        elif self.style == VisualizerStyle.MUSICAL_CQT:
+            # High-quality musical frequency display with custom color
+            # bar_g/sono_g control gain, bar_v/sono_v control volume
+            # Higher values = more sensitive
+            # Use custom color by converting to RGB values
+            r = int(color_hex[0:2], 16)
+            g = int(color_hex[2:4], 16)
+            b = int(color_hex[4:6], 16)
+            # Create color expression for showcqt
+            # st(0,r); st(1,g); st(2,b) sets RGB values
+            basefreq = 27.5  # A0 note
+            endfreq = 14080  # Musical range
+            return f"{audio_input}showcqt=s={size}:fps=30:bar_g=2:sono_g=4:bar_v={self.bar_count/10}:sono_v=17:basefreq={basefreq}:endfreq={endfreq}:tlength='st(0,{r});st(1,{g});st(2,{b});0.17':fontcolor={ffmpeg_color}[viz]"
+        
+        elif self.style == VisualizerStyle.STEREO_SCOPE:
+            # Circular stereo visualization
+            size_square = f"{self.height}x{self.height}"  # Make it square
+            return f"{audio_input}avectorscope=s={size_square}:r=30:zoom=1.5:draw=dot:scale=lin[viz]"
+        
+        # Default to spectrum bars
+        return f"{audio_input}showfreqs=s={size}:mode=bar:colors={ffmpeg_color}:fscale=log:rate=30[viz]"
+    
+    def get_overlay_position(self) -> str:
+        """Get overlay position for placing visualizer on video."""
+        # Enable alpha channel support for transparency
+        return f"overlay={self.x_position}:{self.y_position}:format=auto"
+
+
+@dataclass
+class AudioLayer:
+    """Configuration for an audio layer (sound effect)."""
+    file_path: str = ""
+    volume: float = 1.0  # 0.0 to 2.0
+    loop: bool = False
+    delay_seconds: float = 0.0  # Start delay
+    fade_in: float = 0.0  # Fade in duration
+    fade_out: float = 0.0  # Fade out duration
+    enabled: bool = True
+
+
+@dataclass
+class AnimatedTextItem:
+    """Single animated text with timeline."""
+    text: str = ""
+    start_time: float = 0.0  # Start time in seconds
+    duration: float = 5.0    # How long text appears (seconds)
+    fade_in: float = 1.0     # Fade in duration (seconds)
+    fade_out: float = 1.0    # Fade out duration (seconds)
+    
+    # Styling (same as TextOverlay)
+    font_file: str = ""
+    font_size: int = 48
+    font_color: str = "white"
+    position: OverlayPosition = OverlayPosition.CENTER
+    x_offset: int = 0
+    y_offset: int = 0
+    
+    # Animation options
+    enabled: bool = True
+    shadow: bool = True      # Text shadow for better readability
+    box: bool = False        # Background box
+    box_color: str = "black@0.5"  # Semi-transparent black
+    
+    # Text wrapping
+    max_width: int = 0       # Maximum width in pixels (0 = no wrapping)
+    
+    def get_end_time(self) -> float:
+        """Calculate end time."""
+        return self.start_time + self.duration
+    
+    def _wrap_text(self, text: str, max_width_px: int, font_size: int) -> str:
+        """
+        Manually wrap text by estimating character width.
+        FFmpeg drawtext doesn't have built-in word wrap, so we do it manually.
+        
+        Args:
+            text: Text to wrap
+            max_width_px: Maximum width in pixels
+            font_size: Font size in pixels
+            
+        Returns:
+            Text with manual line breaks (\n)
+        """
+        if max_width_px <= 0:
+            return text
+        
+        # Estimate: monospace ~ 0.6 * font_size, proportional ~ 0.5 * font_size avg
+        avg_char_width = font_size * 0.5
+        max_chars_per_line = int(max_width_px / avg_char_width)
+        
+        if max_chars_per_line <= 0:
+            return text
+        
+        # Word wrap
+        words = text.split()
+        lines = []
+        current_line = []
+        current_length = 0
+        
+        for word in words:
+            word_length = len(word)
+            # +1 for space
+            if current_length + word_length + (1 if current_line else 0) <= max_chars_per_line:
+                current_line.append(word)
+                current_length += word_length + (1 if len(current_line) > 1 else 0)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+                current_length = word_length
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return '\\n'.join(lines)  # FFmpeg uses \n for line breaks
+    
+    def get_drawtext_filter(self) -> str:
+        """Generate FFmpeg drawtext filter with fade in/out."""
+        if not self.enabled or not self.text:
+            return ""
+        
+        # Apply text wrapping if max_width is set
+        text_to_use = self._wrap_text(self.text, self.max_width, self.font_size) if self.max_width > 0 else self.text
+        
+        # Escape special characters
+        escaped_text = text_to_use.replace("'", "\\'").replace(":", "\\:")
+        
+        # Position expression
+        x_expr, y_expr = self._get_position_expression()
+        
+        # Timeline enable expression
+        enable_expr = f"between(t,{self.start_time},{self.get_end_time()})"
+        
+        # Alpha (opacity) expression with fade in/out
+        fade_in_end = self.start_time + self.fade_in
+        fade_out_start = self.get_end_time() - self.fade_out
+        
+        alpha_expr = (
+            f"if(lt(t,{fade_in_end}),"
+            f"(t-{self.start_time})/{self.fade_in},"
+            f"if(lt(t,{fade_out_start}),1,"
+            f"(1-(t-{fade_out_start})/{self.fade_out})))"
+        )
+        
+        # Build filter parts
+        filter_parts = [
+            f"text='{escaped_text}'",
+            f"fontsize={self.font_size}",
+            f"fontcolor={self.font_color}",
+            f"x={x_expr}",
+            f"y={y_expr}",
+            f"enable='{enable_expr}'",
+            f"alpha='{alpha_expr}'"
+        ]
+        
+        if self.font_file and os.path.isfile(self.font_file):
+            escaped_path = self.font_file.replace("\\", "/").replace(":", "\\:")
+            filter_parts.insert(1, f"fontfile='{escaped_path}'")
+        
+        if self.shadow:
+            filter_parts.append("shadowx=2")
+            filter_parts.append("shadowy=2")
+            filter_parts.append("shadowcolor=black@0.5")
+        
+        if self.box:
+            filter_parts.append("box=1")
+            filter_parts.append(f"boxcolor={self.box_color}")
+            filter_parts.append("boxborderw=10")
+        
+        return "drawtext=" + ":".join(filter_parts)
+    
+    def _get_position_expression(self) -> tuple:
+        """Get FFmpeg position expressions."""
+        if self.position == OverlayPosition.TOP_LEFT:
+            return (str(self.x_offset), str(self.y_offset))
+        elif self.position == OverlayPosition.TOP_RIGHT:
+            return (f"w-text_w-{self.x_offset}", str(self.y_offset))
+        elif self.position == OverlayPosition.BOTTOM_LEFT:
+            return (str(self.x_offset), f"h-text_h-{self.y_offset}")
+        elif self.position == OverlayPosition.BOTTOM_RIGHT:
+            return (f"w-text_w-{self.x_offset}", f"h-text_h-{self.y_offset}")
+        elif self.position == OverlayPosition.CENTER:
+            return ("(w-text_w)/2", "(h-text_h)/2")
+        else:  # CUSTOM
+            return (str(self.x_offset), str(self.y_offset))
+
+
+@dataclass
+class AnimatedTextTimeline:
+    """Timeline for multiple animated texts."""
+    enabled: bool = False
+    items: List[AnimatedTextItem] = field(default_factory=list)
+    
+    def get_all_filters(self) -> List[str]:
+        """Get all drawtext filters for enabled items."""
+        filters = []
+        for item in self.items:
+            if item.enabled:
+                filter_str = item.get_drawtext_filter()
+                if filter_str:
+                    filters.append(filter_str)
+        return filters
+    
+    def sort_by_time(self):
+        """Sort items by start time."""
+        self.items.sort(key=lambda x: x.start_time)
+
+
+@dataclass
 class MediaConfig:
     """Media configuration for export."""
     mode: MediaMode = MediaMode.VIDEO_DIRECTORY
@@ -176,16 +478,32 @@ class MediaConfig:
     audio_mix_video_volume: float = 1.0  # Volume for video audio when mixing (0.0-1.0)
     audio_mix_music_volume: float = 1.0  # Volume for music audio when mixing (0.0-1.0)
     
+    # Multi-layer audio (sound effects)
+    audio_layers: List[AudioLayer] = field(default_factory=list)
+    
     # Loop settings
     loop_mode: LoopMode = LoopMode.MATCH_AUDIO
     custom_duration: float = 0.0  # Duration in seconds for CUSTOM_DURATION mode
     audio_multiplier: int = 1  # Multiplier for MULTIPLY_AUDIO mode
     
+    # Video Scale/Zoom (for watermark removal)
+    video_scale_enabled: bool = False
+    video_scale_percent: int = 150  # 100-200% (1.0x - 2.0x zoom)
+    
+    # Video Transitions (xfade between videos)
+    transition_enabled: bool = False
+    transition_duration: float = 1.0  # Duration in seconds (0.5 - 3.0)
+    transition_type: str = "fade"  # fade, fadeblack, fadewhite, wipeleft, etc.
+    
     # Overlays
     logo_overlay: LogoOverlay = field(default_factory=LogoOverlay)
     text_overlay: TextOverlay = field(default_factory=TextOverlay)
+    audio_visualizer: AudioVisualizerConfig = field(default_factory=AudioVisualizerConfig)
     
-    # Sound effect on beat
+    # Multi-text timeline
+    animated_text_timeline: AnimatedTextTimeline = field(default_factory=AnimatedTextTimeline)
+    
+    # Sound effect on beat (legacy, kept for compatibility)
     sfx_enabled: bool = False
     sfx_file: str = ""
     sfx_volume: float = 0.5  # 0.0 to 1.0

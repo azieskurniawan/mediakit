@@ -124,14 +124,25 @@ class LivestreamBuilder:
             audio_input_idx = next_input_idx
             next_input_idx += 1
         
-        # Build filter complex for overlays
-        filter_complex = self._build_filter_complex(media_config, stream_settings, input_is_image=True)
-        
         # Build audio filter
         audio_filter, audio_map = self._build_audio_filter_for_stream(
             media_config,
             video_input_idx=0,  # Image is input 0
             audio_input_idx=audio_input_idx
+        )
+        
+        # Determine audio stream reference for visualizer
+        if audio_input_idx is not None:
+            audio_stream_ref = f"{audio_input_idx}:a"
+        else:
+            audio_stream_ref = "0:a"
+        
+        # Build filter complex for overlays (including visualizer)
+        filter_complex = self._build_filter_complex(
+            media_config, 
+            stream_settings, 
+            input_is_image=True,
+            audio_stream_ref=audio_stream_ref
         )
         
         # Combine filters
@@ -219,7 +230,8 @@ class LivestreamBuilder:
         # Check if we can use stream copy (no overlays, no re-encoding needed)
         has_overlays = (
             (media_config.logo_overlay.enabled and media_config.logo_overlay.filepath) or
-            (media_config.text_overlay.enabled and media_config.text_overlay.text)
+            (media_config.text_overlay.enabled and media_config.text_overlay.text) or
+            (media_config.audio_visualizer.enabled)
         )
         
         # Check if we need audio mixing
@@ -232,19 +244,31 @@ class LivestreamBuilder:
             cmd.extend(['-map', '0:v', '-map', '0:a'])
         else:
             # Need to re-encode
-            # Build filter complex for video overlays
-            filter_complex = self._build_filter_complex(
-                media_config, 
-                stream_settings,
-                input_is_image=False,
-                logo_input_idx=logo_input_idx
-            )
-            
             # Build audio filter based on audio source mode
             audio_filter, audio_map = self._build_audio_filter_for_stream(
                 media_config,
                 video_input_idx=0,
                 audio_input_idx=audio_input_idx
+            )
+            
+            # Determine audio stream reference for visualizer
+            if media_config.audio_source == AudioSource.VIDEO_AUDIO:
+                audio_stream_ref = "0:a"
+            elif media_config.audio_source == AudioSource.AUDIO_DIRECTORY and audio_input_idx is not None:
+                audio_stream_ref = f"{audio_input_idx}:a"
+            elif media_config.audio_source == AudioSource.MIX_BOTH:
+                # Use the mixed audio output
+                audio_stream_ref = "[aout]" if audio_filter else "0:a"
+            else:
+                audio_stream_ref = "0:a"
+            
+            # Build filter complex for video overlays (including visualizer)
+            filter_complex = self._build_filter_complex(
+                media_config, 
+                stream_settings,
+                input_is_image=False,
+                logo_input_idx=logo_input_idx,
+                audio_stream_ref=audio_stream_ref
             )
             
             # Combine all filters
@@ -284,7 +308,8 @@ class LivestreamBuilder:
         media_config: MediaConfig,
         stream_settings: LivestreamSettings,
         input_is_image: bool = False,
-        logo_input_idx: Optional[int] = None
+        logo_input_idx: Optional[int] = None,
+        audio_stream_ref: str = "0:a"
     ) -> str:
         """Build filter_complex string for overlays."""
         filters = []
@@ -313,6 +338,18 @@ class LivestreamBuilder:
             )
             filters.append(f"{current_output}{drawtext}[withtext]")
             current_output = "[withtext]"
+        
+        # Add audio visualizer if enabled
+        if media_config.audio_visualizer.enabled:
+            # Generate visualizer video from audio
+            viz_filter = media_config.audio_visualizer.get_visualizer_filter(audio_stream_ref)
+            if viz_filter:
+                filters.append(viz_filter)
+                
+                # Overlay visualizer on video
+                viz_overlay = media_config.audio_visualizer.get_overlay_position()
+                filters.append(f"{current_output}[viz]{viz_overlay}[withviz]")
+                current_output = "[withviz]"
         
         # Final output
         if filters:

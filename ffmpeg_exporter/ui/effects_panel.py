@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
-from core.media_manager import LogoOverlay, TextOverlay, OverlayPosition
+from core.media_manager import LogoOverlay, TextOverlay, AudioVisualizerConfig, OverlayPosition, VisualizerStyle
 
 
 class EffectsPanel(QWidget):
@@ -17,11 +17,13 @@ class EffectsPanel(QWidget):
     
     # Signals
     settings_changed = Signal()
+    preview_requested = Signal()  # Signal when user wants to preview spectrum
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self._logo_overlay = LogoOverlay()
         self._text_overlay = TextOverlay()
+        self._audio_visualizer = AudioVisualizerConfig()
         self._setup_ui()
     
     def _setup_ui(self) -> None:
@@ -43,6 +45,10 @@ class EffectsPanel(QWidget):
         # Text overlay section
         text_group = self._create_text_section()
         layout.addWidget(text_group)
+        
+        # Audio visualizer section
+        viz_group = self._create_visualizer_section()
+        layout.addWidget(viz_group)
         
         layout.addStretch()
         
@@ -261,6 +267,195 @@ class EffectsPanel(QWidget):
         
         return group
     
+    def _create_visualizer_section(self) -> QGroupBox:
+        """Create the audio visualizer section."""
+        group = QGroupBox("AUDIO VISUALIZER")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(12)
+        
+        # Enable checkbox
+        self._viz_enabled_cb = QCheckBox("Enable Audio Visualizer")
+        self._viz_enabled_cb.stateChanged.connect(self._on_viz_enabled_changed)
+        layout.addWidget(self._viz_enabled_cb)
+        
+        # Visualizer content (disabled by default)
+        self._viz_content = QWidget()
+        viz_layout = QVBoxLayout(self._viz_content)
+        viz_layout.setContentsMargins(0, 0, 0, 0)
+        viz_layout.setSpacing(8)
+        
+        # Style selection
+        style_label = QLabel("Visualization Style:")
+        viz_layout.addWidget(style_label)
+        
+        self._viz_style_combo = QComboBox()
+        self._viz_style_combo.addItems([
+            "Custom Bars (BEST! Full Control)",
+            "Spectrum Bars (FFmpeg)",
+            "Spectrum Line (FFmpeg)",
+            "Waveform Line",
+            "Waveform Point",
+            "Waveform P2P",
+            "Spectrogram",
+            "Musical CQT",
+            "Stereo Scope"
+        ])
+        self._viz_style_combo.currentIndexChanged.connect(self._emit_settings_changed)
+        viz_layout.addWidget(self._viz_style_combo)
+        
+        # Color picker
+        color_row = QHBoxLayout()
+        color_label = QLabel("Color:")
+        color_row.addWidget(color_label)
+        
+        self._viz_color_btn = QPushButton()
+        self._viz_color_btn.setFixedSize(80, 30)
+        self._viz_color_btn.setStyleSheet("background-color: #3b82f6; border: 1px solid #0f3460;")
+        self._viz_color_btn.clicked.connect(self._pick_viz_color)
+        self._viz_color = "#3b82f6"
+        color_row.addWidget(self._viz_color_btn)
+        
+        self._viz_color_edit = QLineEdit("#3b82f6")
+        self._viz_color_edit.setFixedWidth(100)
+        self._viz_color_edit.textChanged.connect(self._on_viz_color_changed)
+        color_row.addWidget(self._viz_color_edit)
+        
+        color_row.addStretch()
+        viz_layout.addLayout(color_row)
+        
+        # Min dB slider (note: only works for some styles)
+        min_db_label = QLabel("Min dB (optional - not all styles support):")
+        min_db_label.setStyleSheet("color: #8892b0; font-size: 11px;")
+        viz_layout.addWidget(min_db_label)
+        
+        min_db_row = QHBoxLayout()
+        self._viz_min_db_slider = QSlider(Qt.Orientation.Horizontal)
+        self._viz_min_db_slider.setRange(-90, 0)
+        self._viz_min_db_slider.setValue(-90)
+        self._viz_min_db_slider.valueChanged.connect(self._on_viz_min_db_changed)
+        min_db_row.addWidget(self._viz_min_db_slider)
+        
+        self._viz_min_db_value = QLabel("-90 dB")
+        self._viz_min_db_value.setFixedWidth(70)
+        min_db_row.addWidget(self._viz_min_db_value)
+        viz_layout.addLayout(min_db_row)
+        
+        # Max dB slider (note: only works for some styles)
+        max_db_label = QLabel("Max dB (optional - not all styles support):")
+        max_db_label.setStyleSheet("color: #8892b0; font-size: 11px;")
+        viz_layout.addWidget(max_db_label)
+        
+        max_db_row = QHBoxLayout()
+        self._viz_max_db_slider = QSlider(Qt.Orientation.Horizontal)
+        self._viz_max_db_slider.setRange(0, 200)
+        self._viz_max_db_slider.setValue(200)
+        self._viz_max_db_slider.valueChanged.connect(self._on_viz_max_db_changed)
+        max_db_row.addWidget(self._viz_max_db_slider)
+        
+        self._viz_max_db_value = QLabel("200 dB")
+        self._viz_max_db_value.setFixedWidth(70)
+        max_db_row.addWidget(self._viz_max_db_value)
+        viz_layout.addLayout(max_db_row)
+        
+        # Bar count slider (for spectrum styles)
+        bar_count_label = QLabel("Bar Count (spectrum styles only):")
+        bar_count_label.setStyleSheet("color: #8892b0; font-size: 11px;")
+        viz_layout.addWidget(bar_count_label)
+        
+        bar_count_row = QHBoxLayout()
+        self._viz_bar_count_slider = QSlider(Qt.Orientation.Horizontal)
+        self._viz_bar_count_slider.setRange(10, 100)
+        self._viz_bar_count_slider.setValue(50)
+        self._viz_bar_count_slider.valueChanged.connect(self._on_viz_bar_count_changed)
+        bar_count_row.addWidget(self._viz_bar_count_slider)
+        
+        self._viz_bar_count_value = QLabel("50 bars")
+        self._viz_bar_count_value.setFixedWidth(70)
+        bar_count_row.addWidget(self._viz_bar_count_value)
+        viz_layout.addLayout(bar_count_row)
+        
+        # Size controls
+        size_label = QLabel("Size:")
+        viz_layout.addWidget(size_label)
+        
+        size_row = QHBoxLayout()
+        
+        w_label = QLabel("W:")
+        size_row.addWidget(w_label)
+        self._viz_width_spin = QSpinBox()
+        self._viz_width_spin.setRange(100, 3840)
+        self._viz_width_spin.setValue(1920)
+        self._viz_width_spin.setSingleStep(10)
+        self._viz_width_spin.valueChanged.connect(self._emit_settings_changed)
+        size_row.addWidget(self._viz_width_spin)
+        
+        h_label = QLabel("H:")
+        size_row.addWidget(h_label)
+        self._viz_height_spin = QSpinBox()
+        self._viz_height_spin.setRange(50, 2160)
+        self._viz_height_spin.setValue(200)
+        self._viz_height_spin.setSingleStep(10)
+        self._viz_height_spin.valueChanged.connect(self._emit_settings_changed)
+        size_row.addWidget(self._viz_height_spin)
+        
+        size_row.addStretch()
+        viz_layout.addLayout(size_row)
+        
+        # Position controls (X, Y coordinates)
+        pos_label = QLabel("Position (X, Y):")
+        viz_layout.addWidget(pos_label)
+        
+        pos_row = QHBoxLayout()
+        
+        x_label = QLabel("X:")
+        pos_row.addWidget(x_label)
+        self._viz_x_spin = QSpinBox()
+        self._viz_x_spin.setRange(0, 3840)
+        self._viz_x_spin.setValue(0)
+        self._viz_x_spin.setSingleStep(10)
+        self._viz_x_spin.valueChanged.connect(self._emit_settings_changed)
+        pos_row.addWidget(self._viz_x_spin)
+        
+        y_label = QLabel("Y:")
+        pos_row.addWidget(y_label)
+        self._viz_y_spin = QSpinBox()
+        self._viz_y_spin.setRange(0, 2160)
+        self._viz_y_spin.setValue(880)
+        self._viz_y_spin.setSingleStep(10)
+        self._viz_y_spin.valueChanged.connect(self._emit_settings_changed)
+        pos_row.addWidget(self._viz_y_spin)
+        
+        pos_row.addStretch()
+        viz_layout.addLayout(pos_row)
+        
+        self._viz_content.setEnabled(False)
+        layout.addWidget(self._viz_content)
+        
+        # Preview button
+        preview_btn = QPushButton("🔍 Generate Preview (10s)")
+        preview_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #00d4ff;
+                color: #0a0a14;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #00b8e6;
+            }
+            QPushButton:disabled {
+                background-color: #4a5568;
+                color: #8892b0;
+            }
+        """)
+        preview_btn.clicked.connect(self._on_preview_requested)
+        layout.addWidget(preview_btn)
+        
+        return group
+    
     def _on_logo_enabled_changed(self, state: int) -> None:
         """Handle logo enabled state change."""
         enabled = state == Qt.CheckState.Checked.value
@@ -353,6 +548,60 @@ class EffectsPanel(QWidget):
             pass
         self.settings_changed.emit()
     
+    def _on_viz_enabled_changed(self, state: int) -> None:
+        """Handle visualizer enabled state change."""
+        enabled = state == Qt.CheckState.Checked.value
+        self._viz_content.setEnabled(enabled)
+        self._audio_visualizer.enabled = enabled
+        self.settings_changed.emit()
+    
+    def _pick_viz_color(self) -> None:
+        """Open color picker for visualizer."""
+        color = QColorDialog.getColor(QColor(self._viz_color), self, "Select Visualizer Color")
+        if color.isValid():
+            self._viz_color = color.name()
+            self._viz_color_btn.setStyleSheet(
+                f"background-color: {self._viz_color}; border: 1px solid #0f3460;"
+            )
+            self._viz_color_edit.setText(self._viz_color)
+            self._audio_visualizer.color = self._viz_color
+            self.settings_changed.emit()
+    
+    def _on_viz_color_changed(self, text: str) -> None:
+        """Handle visualizer color text change."""
+        self._viz_color = text
+        self._audio_visualizer.color = text
+        try:
+            self._viz_color_btn.setStyleSheet(
+                f"background-color: {text}; border: 1px solid #0f3460;"
+            )
+        except:
+            pass
+        self.settings_changed.emit()
+    
+    def _on_viz_min_db_changed(self, value: int) -> None:
+        """Handle min dB slider change."""
+        self._viz_min_db_value.setText(f"{value} dB")
+        self._audio_visualizer.min_db = value
+        self.settings_changed.emit()
+    
+    def _on_viz_max_db_changed(self, value: int) -> None:
+        """Handle max dB slider change."""
+        self._viz_max_db_value.setText(f"{value} dB")
+        self._audio_visualizer.max_db = value
+        self.settings_changed.emit()
+    
+    def _on_viz_bar_count_changed(self, value: int) -> None:
+        """Handle bar count slider change."""
+        self._viz_bar_count_value.setText(f"{value} bars")
+        self._audio_visualizer.bar_count = value
+        self.settings_changed.emit()
+    
+    def _on_preview_requested(self) -> None:
+        """Handle preview button click."""
+        if self._viz_enabled_cb.isChecked():
+            self.preview_requested.emit()
+    
     def _emit_settings_changed(self) -> None:
         """Emit settings changed signal."""
         self.settings_changed.emit()
@@ -380,9 +629,35 @@ class EffectsPanel(QWidget):
         self._text_overlay.x_offset = self._text_x_spin.value()
         self._text_overlay.y_offset = self._text_y_spin.value()
         
+        # Update audio visualizer from UI
+        self._audio_visualizer.enabled = self._viz_enabled_cb.isChecked()
+        
+        # Map combo index to VisualizerStyle enum
+        style_map = [
+            VisualizerStyle.CUSTOM_BARS,
+            VisualizerStyle.SPECTRUM_BARS,
+            VisualizerStyle.SPECTRUM_LINE,
+            VisualizerStyle.WAVEFORM_LINE,
+            VisualizerStyle.WAVEFORM_POINT,
+            VisualizerStyle.WAVEFORM_P2P,
+            VisualizerStyle.SPECTROGRAM,
+            VisualizerStyle.MUSICAL_CQT,
+            VisualizerStyle.STEREO_SCOPE
+        ]
+        self._audio_visualizer.style = style_map[self._viz_style_combo.currentIndex()]
+        self._audio_visualizer.color = self._viz_color_edit.text()
+        self._audio_visualizer.min_db = self._viz_min_db_slider.value()
+        self._audio_visualizer.max_db = self._viz_max_db_slider.value()
+        self._audio_visualizer.bar_count = self._viz_bar_count_slider.value()
+        self._audio_visualizer.x_position = self._viz_x_spin.value()
+        self._audio_visualizer.y_position = self._viz_y_spin.value()
+        self._audio_visualizer.width = self._viz_width_spin.value()
+        self._audio_visualizer.height = self._viz_height_spin.value()
+        
         return {
             'logo_overlay': self._logo_overlay,
             'text_overlay': self._text_overlay,
+            'audio_visualizer': self._audio_visualizer,
         }
     
     def set_settings(self, settings: dict) -> None:
@@ -411,3 +686,30 @@ class EffectsPanel(QWidget):
             self._text_x_spin.setValue(text.x_offset)
             self._text_y_spin.setValue(text.y_offset)
             self._text_overlay = text
+        
+        if 'audio_visualizer' in settings:
+            viz = settings['audio_visualizer']
+            self._viz_enabled_cb.setChecked(viz.enabled)
+            
+            # Map VisualizerStyle enum to combo index
+            style_map = {
+                VisualizerStyle.CUSTOM_BARS: 0,
+                VisualizerStyle.SPECTRUM_BARS: 1,
+                VisualizerStyle.SPECTRUM_LINE: 2,
+                VisualizerStyle.WAVEFORM_LINE: 3,
+                VisualizerStyle.WAVEFORM_POINT: 4,
+                VisualizerStyle.WAVEFORM_P2P: 5,
+                VisualizerStyle.SPECTROGRAM: 6,
+                VisualizerStyle.MUSICAL_CQT: 7,
+                VisualizerStyle.STEREO_SCOPE: 8
+            }
+            self._viz_style_combo.setCurrentIndex(style_map.get(viz.style, 0))
+            self._viz_color_edit.setText(viz.color)
+            self._viz_min_db_slider.setValue(viz.min_db)
+            self._viz_max_db_slider.setValue(viz.max_db)
+            self._viz_bar_count_slider.setValue(viz.bar_count)
+            self._viz_x_spin.setValue(viz.x_position)
+            self._viz_y_spin.setValue(viz.y_position)
+            self._viz_width_spin.setValue(viz.width)
+            self._viz_height_spin.setValue(viz.height)
+            self._audio_visualizer = viz

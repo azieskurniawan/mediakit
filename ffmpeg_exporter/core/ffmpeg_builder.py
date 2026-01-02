@@ -9,8 +9,9 @@ from typing import List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
-from core.media_manager import MediaConfig, MediaMode, MediaManager, LoopMode, AudioSource
+from core.media_manager import MediaConfig, MediaMode, MediaManager, LoopMode, AudioSource, VisualizerStyle
 from core.audio_utils import AudioUtils
+from core.spectrum_renderer import SpectrumRenderer
 
 
 class VideoCodec(Enum):
@@ -77,7 +78,7 @@ class ExportSettings:
     video_codec: VideoCodec = VideoCodec.H264
     rate_control: RateControl = RateControl.CRF
     crf_value: int = 23  # Lower = higher quality
-    bitrate_kbps: int = 8000
+    bitrate_kbps: int = 4000  # Default bitrate (kbps)
     
     # Audio encoding
     audio_codec: AudioCodec = AudioCodec.AAC
@@ -100,6 +101,9 @@ class ExportSettings:
 
 class FFmpegBuilder:
     """Builds FFmpeg commands for video export."""
+    
+    # Windows command line length limit is ~8191 characters
+    MAX_COMMAND_LENGTH = 7000  # Use 7000 to be safe
     
     def __init__(self, ffmpeg_path: str = "ffmpeg", ffprobe_path: str = "ffprobe"):
         """
@@ -194,6 +198,20 @@ class FFmpegBuilder:
             audio_input_idx = next_input_idx
             next_input_idx += 1
         
+        # Generate custom spectrum video if enabled
+        spectrum_input_idx = None
+        if media_config.audio_visualizer.enabled and media_config.audio_visualizer.style == VisualizerStyle.CUSTOM_BARS:
+            spectrum_video = self._generate_custom_spectrum(
+                audio_source,
+                media_config,
+                target_duration
+            )
+            if spectrum_video:
+                # Add spectrum video as input with loop
+                cmd.extend(['-stream_loop', '-1', '-i', spectrum_video])
+                spectrum_input_idx = next_input_idx
+                next_input_idx += 1
+        
         # Input: SFX if enabled
         sfx_input_idx = None
         if media_config.sfx_enabled and media_config.sfx_file and media_config.beat_times:
@@ -201,17 +219,36 @@ class FFmpegBuilder:
             sfx_input_idx = next_input_idx
             next_input_idx += 1
         
-        # Build filter complex
-        filter_complex = self._build_filter_complex(
-            media_config, export_settings,
-            input_is_image=True
-        )
+        # Input: Audio layers (sound effects)
+        audio_layer_indices = []
+        if media_config.audio_layers:
+            for layer_config in media_config.audio_layers:
+                if layer_config.enabled and layer_config.file_path:
+                    cmd.extend(['-i', layer_config.file_path])
+                    audio_layer_indices.append(next_input_idx)
+                    next_input_idx += 1
         
         # Build audio filter (for static image, only AUDIO_DIRECTORY makes sense)
         audio_filter, audio_map = self._build_audio_filter(
             media_config,
             video_input_idx=0,  # Image is input 0, but it doesn't have audio
-            audio_input_idx=audio_input_idx
+            audio_input_idx=audio_input_idx,
+            audio_layer_indices=audio_layer_indices
+        )
+        
+        # Determine audio stream reference for visualizer
+        # For static image, audio is at input 1 (after image at 0)
+        if audio_input_idx is not None:
+            audio_stream_ref = f"{audio_input_idx}:a"
+        else:
+            audio_stream_ref = "0:a"
+        
+        # Build filter complex (including visualizer)
+        filter_complex = self._build_filter_complex(
+            media_config, export_settings,
+            input_is_image=True,
+            audio_stream_ref=audio_stream_ref,
+            spectrum_input_idx=spectrum_input_idx
         )
         
         # Build SFX filter if enabled
@@ -231,10 +268,10 @@ class FFmpegBuilder:
             all_filters.append(sfx_filter)
         
         if all_filters:
-            cmd.extend(['-filter_complex', ";".join(all_filters)])
+            self._add_filter_complex(cmd, ";".join(all_filters))
             cmd.extend(['-map', '[vout]', '-map', audio_map])
         elif filter_complex:
-            cmd.extend(['-filter_complex', filter_complex])
+            self._add_filter_complex(cmd, filter_complex)
             cmd.extend(['-map', '[vout]', '-map', audio_map])
         else:
             # Simple scale filter
@@ -260,6 +297,25 @@ class FFmpegBuilder:
         export_settings: ExportSettings
     ) -> List[str]:
         """Build command for video directory mode."""
+        # Check if transitions are enabled
+        use_transitions = (
+            media_config.transition_enabled and 
+            len(media_config.video_files) > 1
+        )
+        
+        if use_transitions:
+            # Use xfade transition method
+            return self._build_video_with_transitions(media_config, export_settings)
+        else:
+            # Use traditional concat method
+            return self._build_video_traditional_concat(media_config, export_settings)
+    
+    def _build_video_traditional_concat(
+        self,
+        media_config: MediaConfig,
+        export_settings: ExportSettings
+    ) -> List[str]:
+        """Build command for video directory mode (traditional concat method)."""
         # Get audio source (can be None for VIDEO_AUDIO mode)
         audio_source, audio_duration = self._get_audio_source(media_config)
         
@@ -306,6 +362,23 @@ class FFmpegBuilder:
             audio_input_idx = next_input_idx
             next_input_idx += 1
         
+        # Generate custom spectrum video if enabled
+        spectrum_input_idx = None
+        if media_config.audio_visualizer.enabled and media_config.audio_visualizer.style == VisualizerStyle.CUSTOM_BARS:
+            # Determine which audio to analyze
+            spectrum_audio_source = audio_source if audio_source else (videos[0] if videos else None)
+            if spectrum_audio_source:
+                spectrum_video = self._generate_custom_spectrum(
+                    spectrum_audio_source,
+                    media_config,
+                    target_duration
+                )
+                if spectrum_video:
+                    # Add spectrum video as input with loop
+                    cmd.extend(['-stream_loop', '-1', '-i', spectrum_video])
+                    spectrum_input_idx = next_input_idx
+                    next_input_idx += 1
+        
         # Input: logo if enabled
         logo_input_idx = None
         if media_config.logo_overlay.enabled and media_config.logo_overlay.filepath:
@@ -320,18 +393,41 @@ class FFmpegBuilder:
             sfx_input_idx = next_input_idx
             next_input_idx += 1
         
-        # Build video filter complex
-        filter_complex = self._build_filter_complex(
-            media_config, export_settings,
-            input_is_image=False,
-            logo_input_idx=logo_input_idx
-        )
+        # Input: Audio layers (sound effects)
+        audio_layer_indices = []
+        if media_config.audio_layers:
+            for layer_config in media_config.audio_layers:
+                if layer_config.enabled and layer_config.file_path:
+                    cmd.extend(['-i', layer_config.file_path])
+                    audio_layer_indices.append(next_input_idx)
+                    next_input_idx += 1
         
         # Build audio filter based on audio source mode
         audio_filter, audio_map = self._build_audio_filter(
             media_config, 
             video_input_idx=0,
-            audio_input_idx=audio_input_idx
+            audio_input_idx=audio_input_idx,
+            audio_layer_indices=audio_layer_indices
+        )
+        
+        # Determine audio stream reference for visualizer
+        if media_config.audio_source == AudioSource.VIDEO_AUDIO:
+            audio_stream_ref = "0:a"
+        elif media_config.audio_source == AudioSource.AUDIO_DIRECTORY and audio_input_idx is not None:
+            audio_stream_ref = f"{audio_input_idx}:a"
+        elif media_config.audio_source == AudioSource.MIX_BOTH:
+            # Use the mixed audio output
+            audio_stream_ref = "[aout]" if audio_filter else "0:a"
+        else:
+            audio_stream_ref = "0:a"
+        
+        # Build video filter complex (including visualizer)
+        filter_complex = self._build_filter_complex(
+            media_config, export_settings,
+            input_is_image=False,
+            logo_input_idx=logo_input_idx,
+            audio_stream_ref=audio_stream_ref,
+            spectrum_input_idx=spectrum_input_idx
         )
         
         # Build SFX filter if enabled (needs to work with audio filter)
@@ -354,7 +450,7 @@ class FFmpegBuilder:
             all_filters.append(sfx_filter)
         
         if all_filters:
-            cmd.extend(['-filter_complex', ";".join(all_filters)])
+            self._add_filter_complex(cmd, ";".join(all_filters))
             cmd.extend(['-map', '[vout]', '-map', audio_map])
         else:
             # Simple scale + audio mapping
@@ -382,11 +478,22 @@ class FFmpegBuilder:
         media_config: MediaConfig,
         export_settings: ExportSettings,
         input_is_image: bool = False,
-        logo_input_idx: Optional[int] = None
+        logo_input_idx: Optional[int] = None,
+        audio_stream_ref: str = "0:a",
+        spectrum_input_idx: Optional[int] = None
     ) -> str:
         """Build filter_complex string."""
         filters = []
         current_output = "[0:v]"
+        
+        # Apply video scale/zoom first (for watermark removal)
+        if media_config.video_scale_enabled and media_config.video_scale_percent > 100:
+            zoom_factor = media_config.video_scale_percent / 100.0
+            # Method: Scale up then crop back to original size (center crop)
+            # This effectively zooms in and removes edges (watermarks)
+            scale_zoom = f"{current_output}scale=iw*{zoom_factor}:ih*{zoom_factor},crop=iw/{zoom_factor}:ih/{zoom_factor}[zoomed]"
+            filters.append(scale_zoom)
+            current_output = "[zoomed]"
         
         # Scale to target resolution
         scale_filter = f"{current_output}scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2,fps={export_settings.fps}[scaled]"
@@ -408,13 +515,39 @@ class FFmpegBuilder:
             # But we need to add it as a separate input - handled differently
             pass
         
-        # Add text overlay if enabled
+        # Add text overlay if enabled (legacy single text)
         if media_config.text_overlay.enabled and media_config.text_overlay.text:
             drawtext = media_config.text_overlay.get_drawtext_filter(
                 export_settings.width, export_settings.height
             )
             filters.append(f"{current_output}{drawtext}[withtext]")
             current_output = "[withtext]"
+        
+        # Add animated text timeline (multi-text with timing)
+        if media_config.animated_text_timeline.enabled:
+            text_filters = media_config.animated_text_timeline.get_all_filters()
+            for idx, text_filter in enumerate(text_filters):
+                filters.append(f"{current_output}{text_filter}[text{idx}]")
+                current_output = f"[text{idx}]"
+        
+        # Add audio visualizer if enabled
+        if media_config.audio_visualizer.enabled:
+            # Check if custom spectrum video input exists
+            if spectrum_input_idx is not None and media_config.audio_visualizer.style == VisualizerStyle.CUSTOM_BARS:
+                # Overlay custom spectrum video
+                viz_overlay = media_config.audio_visualizer.get_overlay_position()
+                filters.append(f"{current_output}[{spectrum_input_idx}:v]{viz_overlay}[withviz]")
+                current_output = "[withviz]"
+            else:
+                # Use FFmpeg built-in visualizer filters
+                viz_filter = media_config.audio_visualizer.get_visualizer_filter(audio_stream_ref)
+                if viz_filter:
+                    filters.append(viz_filter)
+                    
+                    # Overlay visualizer on video
+                    viz_overlay = media_config.audio_visualizer.get_overlay_position()
+                    filters.append(f"{current_output}[viz]{viz_overlay}[withviz]")
+                    current_output = "[withviz]"
         
         # Final output
         if filters:
@@ -484,20 +617,102 @@ class FFmpegBuilder:
         self,
         media_config: MediaConfig,
         video_input_idx: int,
-        audio_input_idx: Optional[int]
+        audio_input_idx: Optional[int],
+        audio_layer_indices: List[int] = []
     ) -> Tuple[str, str]:
         """
-        Build audio filter based on audio source mode.
+        Build audio filter based on audio source mode, including multi-layer audio support.
         
         Args:
             media_config: Media configuration
             video_input_idx: Index of video input
             audio_input_idx: Index of audio directory input (can be None for VIDEO_AUDIO mode)
+            audio_layer_indices: List of indices for audio layer inputs (sound effects)
             
         Returns:
             Tuple of (filter_string, audio_map_output)
             - filter_string: FFmpeg filter to add to filter_complex (empty if no filter needed)
             - audio_map_output: What to map for audio (e.g., "1:a", "[aout]")
+        """
+        # First, get base audio
+        base_filter, base_ref = self._build_base_audio_filter(
+            media_config, video_input_idx, audio_input_idx
+        )
+        
+        # If no audio layers, return base audio
+        if not audio_layer_indices or not media_config.audio_layers:
+            return base_filter, base_ref
+        
+        # Build multi-layer audio mix
+        filters = []
+        if base_filter:
+            filters.append(base_filter)
+        
+        # Process each audio layer
+        inputs_for_mix = [base_ref if base_ref.startswith('[') else f'[{base_ref}]']
+        
+        for idx, (layer_idx, layer_config) in enumerate(zip(audio_layer_indices, media_config.audio_layers)):
+            if not layer_config.enabled:
+                continue
+            
+            layer_label = f"sfx{idx}"
+            layer_filters = []
+            
+            # Start with layer input
+            current_ref = f"{layer_idx}:a"
+            
+            # Apply delay if needed
+            if layer_config.delay_seconds > 0:
+                delay_filter = f"[{current_ref}]adelay={int(layer_config.delay_seconds * 1000)}[{layer_label}_delay]"
+                layer_filters.append(delay_filter)
+                current_ref = f"{layer_label}_delay"
+            
+            # Apply fade in
+            if layer_config.fade_in > 0:
+                fade_in_filter = f"[{current_ref}]afade=t=in:st=0:d={layer_config.fade_in}[{layer_label}_fin]"
+                layer_filters.append(fade_in_filter)
+                current_ref = f"{layer_label}_fin"
+            
+            # Apply fade out (if needed)
+            if layer_config.fade_out > 0:
+                # Note: fade out timing depends on total duration, applied later in full pipeline
+                pass
+            
+            # Apply volume
+            vol_filter = f"[{current_ref}]volume={layer_config.volume}[{layer_label}_vol]"
+            layer_filters.append(vol_filter)
+            current_ref = f"{layer_label}_vol"
+            
+            # Apply loop if needed
+            if layer_config.loop:
+                loop_filter = f"[{current_ref}]aloop=loop=-1:size=2e+09[{layer_label}_loop]"
+                layer_filters.append(loop_filter)
+                current_ref = f"{layer_label}_loop"
+            
+            filters.extend(layer_filters)
+            inputs_for_mix.append(f"[{current_ref}]")
+        
+        # Mix all audio inputs
+        num_inputs = len(inputs_for_mix)
+        if num_inputs > 1:
+            mix_filter = f"{''.join(inputs_for_mix)}amix=inputs={num_inputs}:duration=first:normalize=0[aout]"
+            filters.append(mix_filter)
+            return ";".join(filters), "[aout]"
+        else:
+            # Only base audio, no mixing needed
+            return base_filter, base_ref
+    
+    def _build_base_audio_filter(
+        self,
+        media_config: MediaConfig,
+        video_input_idx: int,
+        audio_input_idx: Optional[int]
+    ) -> Tuple[str, str]:
+        """
+        Build base audio filter (without layers) based on audio source mode.
+        
+        Returns:
+            Tuple of (filter_string, audio_map_output)
         """
         audio_source = media_config.audio_source
         
@@ -555,7 +770,7 @@ class FFmpegBuilder:
         filter_inputs = ''.join([f'[{i}:a]' for i in range(n)])
         filter_str = f'{filter_inputs}concat=n={n}:v=0:a=1[aout]'
         
-        cmd.extend(['-filter_complex', filter_str])
+        self._add_filter_complex(cmd, filter_str)
         cmd.extend(['-map', '[aout]'])
         cmd.extend(['-c:a', 'libmp3lame', '-q:a', '2'])  # Good quality MP3
         cmd.append(temp_output.name)
@@ -653,6 +868,194 @@ class FFmpegBuilder:
     def _get_target_duration(self, media_config: MediaConfig, audio_duration: float) -> float:
         """Calculate target duration based on loop mode."""
         return media_config.get_target_duration(audio_duration)
+    
+    def _build_video_with_transitions(
+        self,
+        media_config: MediaConfig,
+        export_settings: ExportSettings
+    ) -> List[str]:
+        """Build command for video with xfade transitions."""
+        # Get audio source
+        audio_source, audio_duration = self._get_audio_source(media_config)
+        
+        # Get video files (no looping for xfade, just use videos as-is)
+        videos = self._media_manager.get_ordered_video_list(
+            media_config.video_files,
+            media_config.cover_video if media_config.cover_video else None
+        )
+        
+        if not videos:
+            raise ValueError("No video files selected")
+        
+        if len(videos) < 2:
+            # If only 1 video, fallback to traditional concat
+            return self._build_video_traditional_concat(media_config, export_settings)
+        
+        # Get video durations
+        video_durations = []
+        for video in videos:
+            duration = self._audio_utils.get_duration(video) or 5.0
+            video_durations.append(duration)
+        
+        # Build command
+        cmd = [self._ffmpeg_path, '-y']
+        
+        # Add all video inputs
+        for video in videos:
+            cmd.extend(['-i', video])
+        
+        # Track input indices
+        next_input_idx = len(videos)
+        audio_input_idx = None
+        
+        # Add audio input if needed
+        if audio_source is not None:
+            is_audio_concat = audio_source.endswith('.txt')
+            if is_audio_concat:
+                cmd.extend(['-f', 'concat', '-safe', '0', '-i', audio_source])
+            else:
+                cmd.extend(['-i', audio_source])
+            audio_input_idx = next_input_idx
+            next_input_idx += 1
+        
+        # Generate custom spectrum if enabled
+        spectrum_input_idx = None
+        if media_config.audio_visualizer.enabled and media_config.audio_visualizer.style == VisualizerStyle.CUSTOM_BARS:
+            spectrum_audio_source = audio_source if audio_source else (videos[0] if videos else None)
+            if spectrum_audio_source:
+                target_duration = sum(video_durations)
+                spectrum_video = self._generate_custom_spectrum(
+                    spectrum_audio_source,
+                    media_config,
+                    target_duration
+                )
+                if spectrum_video:
+                    cmd.extend(['-stream_loop', '-1', '-i', spectrum_video])
+                    spectrum_input_idx = next_input_idx
+                    next_input_idx += 1
+        
+        # Add logo input if enabled
+        logo_input_idx = None
+        if media_config.logo_overlay.enabled and media_config.logo_overlay.filepath:
+            cmd.extend(['-i', media_config.logo_overlay.filepath])
+            logo_input_idx = next_input_idx
+            next_input_idx += 1
+        
+        # Input: Audio layers (sound effects)
+        audio_layer_indices = []
+        if media_config.audio_layers:
+            for layer_config in media_config.audio_layers:
+                if layer_config.enabled and layer_config.file_path:
+                    cmd.extend(['-i', layer_config.file_path])
+                    audio_layer_indices.append(next_input_idx)
+                    next_input_idx += 1
+        
+        # Build xfade filter chain for video
+        transition_duration = media_config.transition_duration
+        transition_type = media_config.transition_type
+        
+        xfade_filters = []
+        current_output = "[0:v]"
+        cumulative_offset = 0.0
+        
+        for i in range(len(videos) - 1):
+            # Calculate offset (when to start transition)
+            offset = cumulative_offset + video_durations[i] - transition_duration
+            
+            # Next input
+            next_input = f"[{i+1}:v]"
+            output_label = f"[v{i}]" if i < len(videos) - 2 else "[vxfade]"
+            
+            # Build xfade filter
+            xfade_filter = f"{current_output}{next_input}xfade=transition={transition_type}:duration={transition_duration}:offset={offset}{output_label}"
+            xfade_filters.append(xfade_filter)
+            
+            # Update for next iteration
+            current_output = output_label
+            cumulative_offset = offset + transition_duration
+        
+        # Apply video scale/zoom if enabled
+        if media_config.video_scale_enabled and media_config.video_scale_percent > 100:
+            zoom_factor = media_config.video_scale_percent / 100.0
+            scale_zoom = f"[vxfade]scale=iw*{zoom_factor}:ih*{zoom_factor},crop=iw/{zoom_factor}:ih/{zoom_factor}[vzoomed]"
+            xfade_filters.append(scale_zoom)
+            current_output = "[vzoomed]"
+        else:
+            current_output = "[vxfade]"
+        
+        # Scale to output resolution and apply fps
+        final_scale = f"{current_output}scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2,fps={export_settings.fps}[vscaled]"
+        xfade_filters.append(final_scale)
+        current_output = "[vscaled]"
+        
+        # Add logo overlay if enabled
+        if logo_input_idx is not None:
+            logo_scale = media_config.logo_overlay.get_scale_filter(export_settings.width)
+            logo_overlay = media_config.logo_overlay.get_overlay_filter(
+                export_settings.width, export_settings.height
+            )
+            xfade_filters.append(f"[{logo_input_idx}:v]{logo_scale}[logo]")
+            xfade_filters.append(f"{current_output}[logo]{logo_overlay}[withlogo]")
+            current_output = "[withlogo]"
+        
+        # Add text overlay if enabled
+        if media_config.text_overlay.enabled and media_config.text_overlay.text:
+            drawtext = media_config.text_overlay.get_drawtext_filter(
+                export_settings.width, export_settings.height
+            )
+            xfade_filters.append(f"{current_output}{drawtext}[withtext]")
+            current_output = "[withtext]"
+        
+        # Add audio visualizer overlay if enabled
+        if spectrum_input_idx is not None:
+            viz_overlay = media_config.audio_visualizer.get_overlay_position()
+            xfade_filters.append(f"{current_output}[{spectrum_input_idx}:v]{viz_overlay}[withviz]")
+            current_output = "[withviz]"
+        
+        # Final output
+        final_filter = xfade_filters[-1]
+        xfade_filters[-1] = final_filter.rsplit('[', 1)[0] + '[vout]'
+        
+        # Handle audio with layer support
+        audio_filter, audio_map = self._build_audio_filter(
+            media_config,
+            video_input_idx=0,  # First video
+            audio_input_idx=audio_input_idx,
+            audio_layer_indices=audio_layer_indices
+        )
+        
+        # Build complete filter_complex
+        all_filters = xfade_filters.copy()
+        
+        if audio_filter:
+            all_filters.append(audio_filter)
+            audio_map_to_use = audio_map
+        elif audio_input_idx is not None:
+            audio_map_to_use = f'{audio_input_idx}:a'
+        else:
+            # Mix audio from all video inputs
+            if len(videos) > 1:
+                audio_mix = ''.join([f'[{i}:a]' for i in range(len(videos))])
+                audio_mix += f'amix=inputs={len(videos)}[aout]'
+                all_filters.append(audio_mix)
+                audio_map_to_use = '[aout]'
+            else:
+                audio_map_to_use = '0:a'
+        
+        # Add filter_complex with file fallback for long commands
+        self._add_filter_complex(cmd, ';'.join(all_filters))
+        
+        # Map video and audio
+        cmd.extend(['-map', '[vout]'])
+        cmd.extend(['-map', audio_map_to_use])
+        
+        # Encoding settings
+        self._add_encoding_params(cmd, export_settings)
+        
+        # Output
+        cmd.append(export_settings.output_path)
+        
+        return cmd
     
     def _create_concat_file(
         self,
@@ -794,6 +1197,112 @@ class FFmpegBuilder:
         
         return options
     
+    def _generate_custom_spectrum(
+        self,
+        audio_source: str,
+        media_config: MediaConfig,
+        duration: float
+    ) -> Optional[str]:
+        """
+        Generate custom spectrum visualization using Python renderer.
+        
+        Args:
+            audio_source: Path to audio file.
+            media_config: Media configuration with visualizer settings.
+            duration: Duration in seconds.
+            
+        Returns:
+            Path to generated spectrum video, or None if failed.
+        """
+        if not media_config.audio_visualizer.enabled:
+            return None
+        
+        if media_config.audio_visualizer.style != VisualizerStyle.CUSTOM_BARS:
+            return None
+        
+        try:
+            print(f"\n{'='*60}")
+            print(f"🎨 Generating Custom Spectrum:")
+            print(f"   Audio: {audio_source}")
+            print(f"   Size: {media_config.audio_visualizer.width}x{media_config.audio_visualizer.height}")
+            print(f"   Bars: {media_config.audio_visualizer.bar_count}")
+            print(f"   Color: {media_config.audio_visualizer.color}")
+            print(f"{'='*60}\n")
+            
+            # Create temp output file (MOV for alpha channel support)
+            temp_output = tempfile.NamedTemporaryFile(
+                suffix='_spectrum.mov',
+                delete=False
+            )
+            temp_output.close()
+            self._temp_files.append(temp_output.name)
+            
+            # Initialize renderer
+            print("   Loading audio...")
+            renderer = SpectrumRenderer(audio_source)
+            
+            # Convert hex color to RGB
+            rgb_color = SpectrumRenderer.hex_to_rgb(media_config.audio_visualizer.color)
+            
+            # Generate spectrum video
+            print("   Rendering spectrum frames...")
+            spectrum_path = renderer.create_spectrum_video(
+                output_path=temp_output.name,
+                width=media_config.audio_visualizer.width,
+                height=media_config.audio_visualizer.height,
+                bar_count=media_config.audio_visualizer.bar_count,
+                color=rgb_color,
+                fps=30
+            )
+            
+            print(f"   ✅ Spectrum generated: {spectrum_path}")
+            print(f"{'='*60}\n")
+            
+            return spectrum_path
+            
+        except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"\n{'='*60}")
+            print(f"❌ FAILED to generate custom spectrum!")
+            print(f"   Error: {e}")
+            print(f"   Traceback:\n{error_trace}")
+            print(f"{'='*60}\n")
+            raise  # Re-raise to propagate error to user
+    
+    
+    def _add_filter_complex(self, cmd: List[str], filter_complex: str) -> None:
+        """
+        Add filter_complex to command. Use file if too long to avoid Windows cmd line limit.
+        
+        Args:
+            cmd: Command list to append to
+            filter_complex: Filter complex string
+        """
+        # Estimate command length
+        cmd_str = ' '.join(cmd) + f' -filter_complex {filter_complex}'
+        
+        if len(cmd_str) > self.MAX_COMMAND_LENGTH:
+            # Use filter script file to avoid Windows command line length limit
+            # Create temporary filter script file
+            filter_script = tempfile.NamedTemporaryFile(
+                mode='w', 
+                suffix='.txt', 
+                delete=False,
+                encoding='utf-8'
+            )
+            filter_script.write(filter_complex)
+            filter_script.close()
+            
+            # Track for cleanup
+            self._temp_files.append(filter_script.name)
+            
+            # Use -filter_complex_script instead
+            cmd.extend(['-filter_complex_script', filter_script.name])
+        else:
+            # Normal inline filter_complex
+            cmd.extend(['-filter_complex', filter_complex])
+    
     def cleanup_temp_files(self) -> None:
         """Remove temporary files created during build."""
         for temp_file in self._temp_files:
@@ -813,7 +1322,7 @@ class FFmpegBuilder:
                 video_codec=VideoCodec.H264,
                 rate_control=RateControl.CRF,
                 crf_value=18,
-                bitrate_kbps=8000,
+                bitrate_kbps=4000,  # Default bitrate
                 audio_codec=AudioCodec.AAC,
                 audio_bitrate_kbps=192
             ),

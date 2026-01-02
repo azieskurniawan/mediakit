@@ -13,8 +13,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 
 from core.settings_manager import SettingsManager
-from core.media_manager import MediaMode, LoopMode, AudioSource
+from core.media_manager import MediaMode, LoopMode, AudioSource, AudioLayer
 from core.audio_utils import AudioUtils
+from ui.audio_layer_dialog import AudioLayerDialog
 
 
 class MediaPanel(QWidget):
@@ -22,6 +23,7 @@ class MediaPanel(QWidget):
     
     # Signals
     settings_changed = Signal()
+    video_selected = Signal(str)  # Emits filepath when video is selected for preview
     
     VIDEO_EXTENSIONS = "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm)"
     
@@ -63,6 +65,10 @@ class MediaPanel(QWidget):
         # Audio section
         audio_group = self._create_audio_section()
         layout.addWidget(audio_group)
+        
+        # Audio Layers section (Multi-layer audio / sound effects)
+        audio_layers_group = self._create_audio_layers_section()
+        layout.addWidget(audio_layers_group)
         
         # Sound Effect section
         sfx_group = self._create_sfx_section()
@@ -204,6 +210,223 @@ class MediaPanel(QWidget):
         cover_clear_btn.clicked.connect(lambda: self._cover_edit.clear())
         cover_row.addWidget(cover_clear_btn)
         video_layout.addLayout(cover_row)
+        
+        # Video Scale/Zoom section (for watermark removal)
+        scale_container = QWidget()
+        scale_container.setStyleSheet("""
+            QWidget {
+                background-color: #1a2332;
+                border: 1px solid #0f3460;
+                border-radius: 5px;
+                padding: 10px;
+            }
+        """)
+        scale_layout = QVBoxLayout(scale_container)
+        scale_layout.setSpacing(8)
+        
+        # Title with icon
+        scale_title_layout = QHBoxLayout()
+        scale_title = QLabel("🔍 Video Scale/Zoom (Remove Watermark)")
+        scale_title.setStyleSheet("font-weight: bold; color: #64ffda; font-size: 13px; border: none; padding: 0;")
+        scale_title_layout.addWidget(scale_title)
+        scale_title_layout.addStretch()
+        scale_layout.addLayout(scale_title_layout)
+        
+        # Enable checkbox
+        self._scale_enabled_checkbox = QCheckBox("Enable video zoom (crops edges to remove watermark)")
+        self._scale_enabled_checkbox.setChecked(False)
+        self._scale_enabled_checkbox.toggled.connect(self._on_scale_toggle)
+        self._scale_enabled_checkbox.setStyleSheet("color: #ccd6f6; border: none; padding: 0;")
+        scale_layout.addWidget(self._scale_enabled_checkbox)
+        
+        # Zoom slider container
+        zoom_slider_container = QWidget()
+        zoom_slider_layout = QVBoxLayout(zoom_slider_container)
+        zoom_slider_layout.setContentsMargins(20, 5, 0, 0)
+        zoom_slider_layout.setSpacing(5)
+        
+        # Slider label and value
+        zoom_label_row = QHBoxLayout()
+        zoom_label_row.addWidget(QLabel("Zoom Level:"))
+        self._scale_percent_label = QLabel("150%")
+        self._scale_percent_label.setStyleSheet("color: #666; font-weight: bold; min-width: 50px;")
+        zoom_label_row.addWidget(self._scale_percent_label)
+        zoom_label_row.addStretch()
+        zoom_slider_layout.addLayout(zoom_label_row)
+        
+        # Slider
+        self._scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self._scale_slider.setMinimum(100)  # 100% = no zoom
+        self._scale_slider.setMaximum(200)  # 200% = 2x zoom
+        self._scale_slider.setValue(150)    # 150% default
+        self._scale_slider.setEnabled(False)
+        self._scale_slider.valueChanged.connect(self._on_scale_changed)
+        self._scale_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                background: #0f3460;
+                height: 6px;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #64ffda;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #7fffd4;
+            }
+            QSlider::handle:horizontal:disabled {
+                background: #444;
+            }
+        """)
+        zoom_slider_layout.addWidget(self._scale_slider)
+        
+        # Visual scale guide
+        scale_guide = QLabel("100% ←→ 150% (recommended) ←→ 200%")
+        scale_guide.setStyleSheet("color: #666; font-size: 10px; font-style: italic;")
+        zoom_slider_layout.addWidget(scale_guide)
+        
+        scale_layout.addWidget(zoom_slider_container)
+        
+        # Info label
+        info_label = QLabel("⚠️ Higher zoom = more edges removed = better watermark removal\n"
+                           "💡 Works best for watermarks in corners. Applied to ALL videos.")
+        info_label.setStyleSheet("color: #888; font-size: 11px; font-style: italic; border: none; padding: 5px 0 0 0;")
+        info_label.setWordWrap(True)
+        scale_layout.addWidget(info_label)
+        
+        video_layout.addWidget(scale_container)
+        
+        # Video Transitions section
+        transition_container = QWidget()
+        transition_container.setStyleSheet("""
+            QWidget {
+                background-color: #1a2332;
+                border: 1px solid #0f3460;
+                border-radius: 5px;
+                padding: 10px;
+            }
+        """)
+        transition_layout = QVBoxLayout(transition_container)
+        transition_layout.setSpacing(8)
+        
+        # Title with icon
+        transition_title_layout = QHBoxLayout()
+        transition_title = QLabel("🎬 Video Transitions")
+        transition_title.setStyleSheet("font-weight: bold; color: #64ffda; font-size: 13px; border: none; padding: 0;")
+        transition_title_layout.addWidget(transition_title)
+        transition_title_layout.addStretch()
+        transition_layout.addLayout(transition_title_layout)
+        
+        # Enable checkbox
+        self._transition_enabled_checkbox = QCheckBox("Enable smooth transitions between videos (fade in/out)")
+        self._transition_enabled_checkbox.setChecked(False)
+        self._transition_enabled_checkbox.toggled.connect(self._on_transition_toggle)
+        self._transition_enabled_checkbox.setStyleSheet("color: #ccd6f6; border: none; padding: 0;")
+        transition_layout.addWidget(self._transition_enabled_checkbox)
+        
+        # Settings container
+        transition_settings_container = QWidget()
+        transition_settings_layout = QVBoxLayout(transition_settings_container)
+        transition_settings_layout.setContentsMargins(20, 5, 0, 0)
+        transition_settings_layout.setSpacing(8)
+        
+        # Transition type
+        type_row = QHBoxLayout()
+        type_row.addWidget(QLabel("Type:"))
+        self._transition_type_combo = QComboBox()
+        self._transition_type_combo.addItems([
+            "fade",
+            "fadeblack",
+            "fadewhite",
+            "wipeleft",
+            "wiperight",
+            "dissolve"
+        ])
+        self._transition_type_combo.setCurrentIndex(0)
+        self._transition_type_combo.setEnabled(False)
+        self._transition_type_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #0f3460;
+                color: #ccd6f6;
+                border: 1px solid #1a4f7a;
+                border-radius: 3px;
+                padding: 3px 8px;
+                min-width: 150px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid #64ffda;
+            }
+            QComboBox:disabled {
+                background-color: #1a1a1a;
+                color: #666;
+            }
+        """)
+        type_row.addWidget(self._transition_type_combo)
+        type_row.addStretch()
+        transition_settings_layout.addLayout(type_row)
+        
+        # Duration slider
+        duration_label_row = QHBoxLayout()
+        duration_label_row.addWidget(QLabel("Duration:"))
+        self._transition_duration_label = QLabel("1.0s")
+        self._transition_duration_label.setStyleSheet("color: #666; font-weight: bold; min-width: 50px;")
+        duration_label_row.addWidget(self._transition_duration_label)
+        duration_label_row.addStretch()
+        transition_settings_layout.addLayout(duration_label_row)
+        
+        self._transition_duration_slider = QSlider(Qt.Orientation.Horizontal)
+        self._transition_duration_slider.setMinimum(5)   # 0.5 seconds
+        self._transition_duration_slider.setMaximum(30)  # 3.0 seconds
+        self._transition_duration_slider.setValue(10)    # 1.0 second default
+        self._transition_duration_slider.setEnabled(False)
+        self._transition_duration_slider.valueChanged.connect(self._on_transition_duration_changed)
+        self._transition_duration_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                background: #0f3460;
+                height: 6px;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #64ffda;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #7fffd4;
+            }
+            QSlider::handle:horizontal:disabled {
+                background: #444;
+            }
+        """)
+        transition_settings_layout.addWidget(self._transition_duration_slider)
+        
+        # Guide
+        guide_label = QLabel("0.5s ←→ 1.0s (recommended) ←→ 3.0s")
+        guide_label.setStyleSheet("color: #666; font-size: 10px; font-style: italic;")
+        transition_settings_layout.addWidget(guide_label)
+        
+        transition_layout.addWidget(transition_settings_container)
+        
+        # Info label
+        transition_info = QLabel("💡 Smooth crossfade makes video cuts less abrupt\n"
+                                "⚠️ Only applies when you have 2+ videos\n"
+                                "⚙️ Note: Encoding with transitions takes longer")
+        transition_info.setStyleSheet("color: #888; font-size: 11px; font-style: italic; border: none; padding: 5px 0 0 0;")
+        transition_info.setWordWrap(True)
+        transition_layout.addWidget(transition_info)
+        
+        video_layout.addWidget(transition_container)
         
         layout.addWidget(self._video_section)
         
@@ -575,6 +798,149 @@ class MediaPanel(QWidget):
         
         return group
     
+    def _create_audio_layers_section(self) -> QGroupBox:
+        """Create the audio layers (multi-layer audio) section."""
+        group = QGroupBox("🔊 AUDIO LAYERS (Sound Effects)")
+        group.setStyleSheet("""
+            QGroupBox {
+                background-color: #16213e;
+                border: 2px solid #0f3460;
+                border-radius: 8px;
+                font-weight: bold;
+                color: #64ffda;
+                padding-top: 15px;
+                margin-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+        
+        # Info label
+        info_label = QLabel("Add multiple sound effects that will be mixed with main audio")
+        info_label.setStyleSheet("color: #8892b0; font-size: 11px; font-weight: normal;")
+        layout.addWidget(info_label)
+        
+        # Audio layers list
+        self._audio_layers_list = QListWidget()
+        self._audio_layers_list.setMaximumHeight(120)
+        self._audio_layers_list.setStyleSheet("""
+            QListWidget {
+                background-color: #0a192f;
+                border: 1px solid #233554;
+                border-radius: 4px;
+                color: #ccd6f6;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #172a45;
+            }
+            QListWidget::item:selected {
+                background-color: #0f3460;
+                color: #64ffda;
+            }
+            QListWidget::item:hover {
+                background-color: #172a45;
+            }
+        """)
+        layout.addWidget(self._audio_layers_list)
+        
+        # Buttons
+        btn_row = QHBoxLayout()
+        
+        add_layer_btn = QPushButton("➕ Add Sound Effect")
+        add_layer_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0f3460;
+                color: #64ffda;
+                border: 1px solid #64ffda;
+                padding: 8px 15px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(100, 255, 218, 0.2);
+            }
+        """)
+        add_layer_btn.clicked.connect(self._add_audio_layer)
+        btn_row.addWidget(add_layer_btn)
+        
+        edit_layer_btn = QPushButton("✏️ Edit")
+        edit_layer_btn.clicked.connect(self._edit_audio_layer)
+        btn_row.addWidget(edit_layer_btn)
+        
+        remove_layer_btn = QPushButton("🗑️ Remove")
+        remove_layer_btn.clicked.connect(self._remove_audio_layer)
+        btn_row.addWidget(remove_layer_btn)
+        
+        layout.addLayout(btn_row)
+        
+        return group
+    
+    def _add_audio_layer(self):
+        """Add new audio layer (sound effect)."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Sound Effect",
+            "",
+            "Audio Files (*.mp3 *.wav *.aac *.m4a *.ogg *.flac)"
+        )
+        
+        if not file_path:
+            return
+        
+        # Open dialog to configure layer
+        dialog = AudioLayerDialog(self, file_path)
+        if dialog.exec() == AudioLayerDialog.Accepted:
+            layer_config = dialog.get_config()
+            
+            # Add to list with visual display
+            filename = os.path.basename(file_path)
+            loop_text = "🔁 Loop" if layer_config.loop else "▶️ Once"
+            vol_text = f"Vol: {int(layer_config.volume * 100)}%"
+            
+            item_text = f"🎵 {filename} | {loop_text} | {vol_text}"
+            
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, layer_config)  # Store config
+            self._audio_layers_list.addItem(item)
+            
+            self._emit_settings_changed()
+    
+    def _edit_audio_layer(self):
+        """Edit selected audio layer."""
+        current_item = self._audio_layers_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Selection", "Please select a layer to edit")
+            return
+        
+        layer_config = current_item.data(Qt.UserRole)
+        dialog = AudioLayerDialog(self, layer_config.file_path, layer_config)
+        
+        if dialog.exec() == AudioLayerDialog.Accepted:
+            updated_config = dialog.get_config()
+            current_item.setData(Qt.UserRole, updated_config)
+            
+            # Update display text
+            filename = os.path.basename(updated_config.file_path)
+            loop_text = "🔁 Loop" if updated_config.loop else "▶️ Once"
+            vol_text = f"Vol: {int(updated_config.volume * 100)}%"
+            current_item.setText(f"🎵 {filename} | {loop_text} | {vol_text}")
+            
+            self._emit_settings_changed()
+    
+    def _remove_audio_layer(self):
+        """Remove selected audio layer."""
+        current_row = self._audio_layers_list.currentRow()
+        if current_row >= 0:
+            self._audio_layers_list.takeItem(current_row)
+            self._emit_settings_changed()
+    
     def _on_beat_sensitivity_changed(self, value: int) -> None:
         """Handle beat sensitivity slider change."""
         self._beat_sensitivity_label.setText(f"{value}%")
@@ -927,6 +1293,43 @@ class MediaPanel(QWidget):
         
         self.settings_changed.emit()
     
+    def _on_scale_toggle(self, checked: bool) -> None:
+        """Handle video scale enable/disable."""
+        self._scale_slider.setEnabled(checked)
+        if checked:
+            self._scale_percent_label.setStyleSheet("color: #64ffda; font-weight: bold; min-width: 50px;")
+        else:
+            self._scale_percent_label.setStyleSheet("color: #666; font-weight: bold; min-width: 50px;")
+        self.settings_changed.emit()
+    
+    def _on_scale_changed(self, value: int) -> None:
+        """Handle zoom slider value change."""
+        self._scale_percent_label.setText(f"{value}%")
+        
+        # Visual warning for extreme zoom
+        if value >= 180:
+            self._scale_percent_label.setStyleSheet("color: #ff6b6b; font-weight: bold; min-width: 50px;")
+        elif self._scale_enabled_checkbox.isChecked():
+            self._scale_percent_label.setStyleSheet("color: #64ffda; font-weight: bold; min-width: 50px;")
+        
+        self.settings_changed.emit()
+    
+    def _on_transition_toggle(self, checked: bool) -> None:
+        """Handle transition enable/disable."""
+        self._transition_type_combo.setEnabled(checked)
+        self._transition_duration_slider.setEnabled(checked)
+        if checked:
+            self._transition_duration_label.setStyleSheet("color: #64ffda; font-weight: bold; min-width: 50px;")
+        else:
+            self._transition_duration_label.setStyleSheet("color: #666; font-weight: bold; min-width: 50px;")
+        self.settings_changed.emit()
+    
+    def _on_transition_duration_changed(self, value: int) -> None:
+        """Handle transition duration slider change."""
+        duration = value / 10.0  # Convert to seconds
+        self._transition_duration_label.setText(f"{duration:.1f}s")
+        self.settings_changed.emit()
+    
     # ==================== VIDEO FILE MANAGEMENT ====================
     
     def _add_video_files(self) -> None:
@@ -974,6 +1377,12 @@ class MediaPanel(QWidget):
         item.setData(Qt.ItemDataRole.UserRole, filepath)
         item.setToolTip(filepath)
         self._video_list.addItem(item)
+        
+        # Emit signal for preview (use first video in list)
+        if self._video_list.count() > 0:
+            first_item = self._video_list.item(0)
+            first_filepath = first_item.data(Qt.ItemDataRole.UserRole)
+            self.video_selected.emit(first_filepath)
     
     def _remove_selected_video(self) -> None:
         """Remove selected video files from list."""
@@ -1149,12 +1558,30 @@ class MediaPanel(QWidget):
             'loop_mode': loop_mode,
             'custom_duration': custom_duration,
             'audio_multiplier': self._multiplier_spin.value(),
+            # Audio layers (sound effects)
+            'audio_layers': self._get_audio_layers(),
+            # Video scale/zoom settings
+            'video_scale_enabled': self._scale_enabled_checkbox.isChecked(),
+            'video_scale_percent': self._scale_slider.value(),
+            # Video transition settings
+            'transition_enabled': self._transition_enabled_checkbox.isChecked(),
+            'transition_duration': self._transition_duration_slider.value() / 10.0,
+            'transition_type': self._transition_type_combo.currentText(),
             # Sound effect settings
             'sfx_enabled': self._sfx_enabled_cb.isChecked(),
             'sfx_file': self._sfx_file,
             'sfx_volume': self._sfx_volume_slider.value() / 100.0,
             'beat_times': self._beat_times.copy(),
         }
+    
+    def _get_audio_layers(self) -> list:
+        """Get all audio layer configurations."""
+        layers = []
+        for i in range(self._audio_layers_list.count()):
+            item = self._audio_layers_list.item(i)
+            layer_config = item.data(Qt.UserRole)
+            layers.append(layer_config)
+        return layers
     
     def set_settings(self, settings: dict) -> None:
         """
