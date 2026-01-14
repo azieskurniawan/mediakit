@@ -36,9 +36,17 @@ class MediaPanel(QWidget):
         self._beat_times = []  # Detected beat times in seconds
         self._sfx_file = ""  # Sound effect file path
         
-        # Update ffprobe path
+        # Update ffprobe path from settings
+        # If ffprobe not set but ffmpeg is, try to derive ffprobe path
         if settings_manager.settings.ffprobe_path:
             self._audio_utils.ffprobe_path = settings_manager.settings.ffprobe_path
+        elif settings_manager.settings.ffmpeg_path:
+            # Try to derive ffprobe from ffmpeg path
+            import os
+            ffmpeg_dir = os.path.dirname(settings_manager.settings.ffmpeg_path)
+            ffprobe_path = os.path.join(ffmpeg_dir, 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+            if os.path.isfile(ffprobe_path):
+                self._audio_utils.ffprobe_path = ffprobe_path
         
         self._setup_ui()
     

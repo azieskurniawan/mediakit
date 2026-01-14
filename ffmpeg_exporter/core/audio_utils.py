@@ -49,6 +49,19 @@ class AudioUtils:
         """Set FFprobe path."""
         self._ffprobe_path = path
     
+    def _is_ffprobe_available(self) -> bool:
+        """Check if ffprobe is accessible."""
+        try:
+            result = subprocess.run(
+                [self._ffprobe_path, '-version'],
+                capture_output=True,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return False
+    
     def get_duration(self, filepath: str) -> Optional[float]:
         """
         Get duration of audio/video file in seconds.
@@ -60,6 +73,11 @@ class AudioUtils:
             Duration in seconds or None if failed.
         """
         if not os.path.isfile(filepath):
+            return None
+        
+        # Check if ffprobe is accessible
+        if not self._is_ffprobe_available():
+            print(f"Warning: ffprobe not found at '{self._ffprobe_path}'. Cannot get duration.")
             return None
         
         cmd = [

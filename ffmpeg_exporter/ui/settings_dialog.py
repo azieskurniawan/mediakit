@@ -335,6 +335,14 @@ class SettingsDialog(QDialog):
             )
             return
         
+        # Auto-detect ffprobe if not provided but ffmpeg is
+        if ffmpeg_path and not ffprobe_path:
+            ffmpeg_dir = os.path.dirname(ffmpeg_path)
+            auto_ffprobe = os.path.join(ffmpeg_dir, 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+            if os.path.isfile(auto_ffprobe):
+                ffprobe_path = auto_ffprobe
+                print(f"Auto-detected ffprobe: {ffprobe_path}")
+        
         # Validate FFprobe path if provided
         if ffprobe_path and not os.path.isfile(ffprobe_path):
             QMessageBox.warning(
