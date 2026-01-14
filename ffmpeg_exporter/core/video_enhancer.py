@@ -78,12 +78,12 @@ class VideoEnhancer:
             # Check if CUDA is available (optional, but good to know)
             cuda_available = torch.cuda.is_available()
             if cuda_available:
-                print(f"✅ Real-ESRGAN available with GPU: {torch.cuda.get_device_name(0)}")
+                print(f"[OK] Real-ESRGAN available with GPU: {torch.cuda.get_device_name(0)}")
             else:
-                print(f"✅ Real-ESRGAN available (CPU only)")
+                print(f"[OK] Real-ESRGAN available (CPU only)")
             return True
         except Exception as e:
-            print(f"❌ Real-ESRGAN not available: {e}")
+            print(f"[X] Real-ESRGAN not available: {e}")
             return False
     
     def is_realesrgan_available(self) -> bool:
