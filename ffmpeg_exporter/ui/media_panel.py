@@ -1275,7 +1275,22 @@ class MediaPanel(QWidget):
             self._audio_info_label.setText("No audio files selected")
             self._duration_label.setText("Total Duration: --:--:--")
         else:
-            self._audio_info_label.setText(f"{count} audio file(s) selected")
+            # Count SRT files
+            from pathlib import Path
+            srt_count = 0
+            for audio_file in self._audio_files:
+                srt_path = Path(audio_file).with_suffix('.srt')
+                if srt_path.exists():
+                    srt_count += 1
+            
+            # Build info text
+            info_text = f"{count} audio file(s) selected"
+            if srt_count > 0:
+                info_text += f" | {srt_count} file(s) dengan SRT"
+            else:
+                info_text += " | ⚠ Tidak ada file SRT ditemukan"
+            
+            self._audio_info_label.setText(info_text)
             self._calculate_duration()
     
     def _browse_audio_dir(self) -> None:

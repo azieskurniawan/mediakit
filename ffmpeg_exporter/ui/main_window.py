@@ -1,6 +1,7 @@
 """
 Main Window - Primary application window with tab navigation.
 """
+import os
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTabWidget, QLabel, QStatusBar, QMessageBox
@@ -11,6 +12,8 @@ from PySide6.QtGui import QFont, QIcon
 from ui.media_panel import MediaPanel
 from ui.effects_panel import EffectsPanel
 from ui.text_timeline_panel import TextTimelinePanel
+from ui.overlay_panel import OverlayPanel
+from ui.visualizer_panel import VisualizerPanel
 from ui.preview_panel import PreviewPanel
 from ui.export_dialog import ExportDialog
 from ui.settings_dialog import SettingsDialog
@@ -18,7 +21,7 @@ from ui.livestream_panel import LivestreamPanel
 from ui.job_monitor_window import JobMonitorWindow
 from ui.enhanced_panel import EnhancedPanel
 from core.settings_manager import SettingsManager
-from core.media_manager import MediaManager, MediaConfig, LoopMode
+from core.media_manager import MediaManager, MediaConfig, LoopMode, VisualizerType
 from core.job_manager import JobManager, JobType
 from core.ffmpeg_builder import FFmpegBuilder, ExportSettings
 from core.livestream_builder import LivestreamBuilder, LivestreamSettings
@@ -178,6 +181,16 @@ class MainWindow(QMainWindow):
         # Text Timeline tab (Multi-text with timing)
         self._text_timeline_panel = TextTimelinePanel()
         self._tab_widget.addTab(self._text_timeline_panel, "TEXT TIMELINE")
+        
+        # Overlay tab (blend modes + chroma key)
+        self._overlay_panel = OverlayPanel()
+        self._tab_widget.addTab(self._overlay_panel, "OVERLAY")
+        
+        # Visualizer tab (NEW)
+        self._visualizer_panel = VisualizerPanel()
+        self._visualizer_panel.preview_requested.connect(self._generate_visualizer_preview)
+        self._visualizer_panel.live_play_requested.connect(self._open_live_visualizer_player)
+        self._tab_widget.addTab(self._visualizer_panel, "VISUALIZER")
         
         # Enhanced tab
         self._enhanced_panel = EnhancedPanel(self._video_enhancer)
@@ -478,9 +491,16 @@ class MainWindow(QMainWindow):
         config.logo_overlay = effects_settings.get('logo_overlay', config.logo_overlay)
         config.text_overlay = effects_settings.get('text_overlay', config.text_overlay)
         config.audio_visualizer = effects_settings.get('audio_visualizer', config.audio_visualizer)
+        config.subtitle_config = effects_settings.get('subtitle_config', config.subtitle_config)
         
         # Get animated text timeline settings
         config.animated_text_timeline = self._text_timeline_panel.get_settings()
+        
+        # Advanced overlays (blend modes + chroma key)
+        config.overlays = self._overlay_panel.get_overlays()
+        
+        # Get visualizer config (NEW)
+        config.visualizer = self._visualizer_panel.get_config()
         
         # Update media manager config
         self._media_manager.config = config
@@ -899,6 +919,171 @@ class MainWindow(QMainWindow):
                 "Scheduled Stream Error",
                 f"Failed to start scheduled stream '{schedule.name}':\n\n{str(e)}"
             )
+    
+    def _generate_visualizer_preview(self) -> None:
+        """Generate visualizer preview (10 seconds)."""
+        from PySide6.QtWidgets import QMessageBox, QFileDialog, QProgressDialog
+        from PySide6.QtCore import QThread
+        from core.visualizer_preview import VisualizerPreviewGenerator
+        from datetime import datetime
+        import tempfile
+        
+        # Get audio files from media panel
+        media_settings = self._media_panel.get_settings()
+        audio_files = media_settings.get('audio_files', [])
+        
+        if not audio_files:
+            QMessageBox.warning(
+                self,
+                "No Audio",
+                "Please add audio files first in the MEDIA tab."
+            )
+            return
+        
+        # Get visualizer config
+        visualizer_config = self._visualizer_panel.get_config()
+        
+        if visualizer_config.type == VisualizerType.NONE:
+            QMessageBox.warning(
+                self,
+                "No Visualizer",
+                "Please select a visualizer type (Bar Spectrum or Sound Wave)."
+            )
+            return
+        
+        # Ask for output directory only
+        output_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Select Folder for Visualizer Preview",
+            "",
+            QFileDialog.ShowDirsOnly
+        )
+        
+        if not output_dir:
+            return
+        
+        # Auto-generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        viz_type = "bar_spectrum" if visualizer_config.type == VisualizerType.BAR_SPECTRUM else "sound_wave"
+        output_filename = f"visualizer_preview_{viz_type}_{timestamp}.mp4"
+        output_file = os.path.join(output_dir, output_filename)
+        
+        # Show progress dialog
+        progress_dialog = QProgressDialog(
+            "Generating visualizer preview...",
+            "Cancel",
+            0,
+            100,
+            self
+        )
+        progress_dialog.setWindowTitle("Preview Generator")
+        progress_dialog.setModal(True)
+        progress_dialog.show()
+        
+        # Generate preview
+        try:
+            ffmpeg_path = self._settings_manager.get_ffmpeg_path()
+            generator = VisualizerPreviewGenerator(ffmpeg_path=ffmpeg_path)
+            
+            def progress_callback(progress: float, message: str):
+                progress_dialog.setValue(int(progress * 100))
+                progress_dialog.setLabelText(message)
+                if progress_dialog.wasCanceled():
+                    raise RuntimeError("Cancelled by user")
+            
+            success = generator.generate_preview(
+                audio_files=audio_files,
+                visualizer_config=visualizer_config,
+                output_file=output_file,
+                duration=60.0,  # Changed to 60 seconds (1 minute)
+                fps=30,
+                width=1920,
+                height=1080,
+                background_color="#000000",
+                progress_callback=progress_callback
+            )
+            
+            progress_dialog.close()
+            
+            if success:
+                # Load in preview panel
+                self._preview_panel.load_video(output_file)
+                
+                QMessageBox.information(
+                    self,
+                    "Preview Ready! 🎬",
+                    f"Visualizer preview generated successfully!\n\n"
+                    f"File: {output_filename}\n"
+                    f"Location: {output_dir}\n\n"
+                    f"Click ▶ PLAY to view."
+                )
+            else:
+                QMessageBox.critical(
+                    self,
+                    "Preview Failed",
+                    "Failed to generate visualizer preview."
+                )
+        
+        except Exception as e:
+            progress_dialog.close()
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Preview generation error:\n\n{str(e)}"
+            )
+    
+    def _open_live_visualizer_player(self) -> None:
+        """Open live visualizer player window."""
+        from PySide6.QtWidgets import QMessageBox, QDialog
+        from ui.live_visualizer_player import LiveVisualizerPlayer
+        
+        # Get audio files
+        media_settings = self._media_panel.get_settings()
+        audio_files = media_settings.get('audio_files', [])
+        
+        if not audio_files:
+            QMessageBox.warning(
+                self,
+                "No Audio",
+                "Please add audio files first in the MEDIA tab."
+            )
+            return
+        
+        # Get visualizer config
+        visualizer_config = self._visualizer_panel.get_config()
+        
+        if visualizer_config.type == VisualizerType.NONE:
+            QMessageBox.warning(
+                self,
+                "No Visualizer",
+                "Please select a visualizer type (Bar Spectrum or Sound Wave)."
+            )
+            return
+        
+        # Create live player dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Live Visualizer Player 🎵")
+        dialog.setMinimumSize(900, 600)
+        dialog.setModal(False)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Create live player widget
+        live_player = LiveVisualizerPlayer()
+        live_player.set_audio_files(audio_files)
+        live_player.set_visualizer_config(visualizer_config)
+        live_player.set_ffmpeg_path(self._settings_manager.get_ffmpeg_path())
+        
+        layout.addWidget(live_player)
+        
+        # Stop player when dialog is closed
+        def on_dialog_finished():
+            live_player._media_player.stop()
+            live_player._render_timer.stop()
+        
+        dialog.finished.connect(on_dialog_finished)
+        
+        dialog.show()
     
     def closeEvent(self, event) -> None:
         """Handle window close event."""

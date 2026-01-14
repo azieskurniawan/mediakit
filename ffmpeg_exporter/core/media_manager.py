@@ -39,8 +39,17 @@ class OverlayPosition(Enum):
     CUSTOM = "custom"
 
 
+class VisualizerType(Enum):
+    """Audio visualizer type."""
+    NONE = "none"
+    BAR_SPECTRUM = "bar_spectrum"            # Bar spectrum (Astrofox style)
+    SOUND_WAVE = "sound_wave"                # Sound waveform (Astrofox style)
+    CIRCULAR_SPECTRUM = "circular_spectrum"  # Future: circular bars
+    LINE_SPECTRUM = "line_spectrum"          # Future: line spectrum
+
+
 class VisualizerStyle(Enum):
-    """Audio visualizer style options."""
+    """Audio visualizer style options (OLD - for FFmpeg native filters)."""
     CUSTOM_BARS = "custom_bars"              # Custom Python renderer (BEST!)
     WAVEFORM_LINE = "waveform_line"          # showwaves mode=line
     WAVEFORM_POINT = "waveform_point"        # showwaves mode=point
@@ -50,6 +59,31 @@ class VisualizerStyle(Enum):
     SPECTROGRAM = "spectrogram"              # showspectrum
     MUSICAL_CQT = "musical_cqt"              # showcqt
     STEREO_SCOPE = "stereo_scope"            # avectorscope
+
+
+class BlendMode(Enum):
+    """Overlay blend modes (like Photoshop)."""
+    NORMAL = "normal"                # Default - no blending
+    MULTIPLY = "multiply"            # Multiply (darken)
+    SCREEN = "screen"                # Screen (lighten)
+    OVERLAY = "overlay"              # Overlay (combination)
+    DARKEN = "darken"                # Darken only
+    LIGHTEN = "lighten"              # Lighten only (Brighten)
+    COLOR_DODGE = "dodge"            # Color dodge
+    COLOR_BURN = "burn"              # Color burn
+    HARD_LIGHT = "hardlight"         # Hard light
+    SOFT_LIGHT = "softlight"         # Soft light
+    DIFFERENCE = "difference"        # Difference
+    EXCLUSION = "exclusion"          # Exclusion
+    LINEAR_LIGHT = "linearlight"     # Linear light (close to linear burn)
+    VIVID_LIGHT = "vividlight"       # Vivid light
+    PIN_LIGHT = "pinlight"           # Pin light
+    HARD_MIX = "hardmix"             # Hard mix
+    PHOENIX = "phoenix"              # Phoenix
+    REFLECT = "reflect"              # Reflect
+    GLOW = "glow"                    # Glow
+    NEGATION = "negation"            # Negation
+    HEAT = "heat"                    # Heat
 
 
 @dataclass
@@ -172,8 +206,106 @@ class TextOverlay:
 
 
 @dataclass
+class BarSpectrumConfig:
+    """Bar Spectrum visualizer settings (Astrofox style)."""
+    enabled: bool = True
+    
+    # FFT Settings
+    max_db: int = -12          # Range: -40 to 0 (Astrofox: maxDecibels)
+    min_frequency: int = 0     # Hz
+    max_frequency: int = 6000  # Hz (default 6kHz)
+    smoothing: float = 0.5     # 0.0 - 0.99
+    normalize: bool = True     # Astrofox default: True for BarSpectrum
+    
+    # Size
+    width: int = 770
+    height: int = 240
+    shadow_height: int = 100
+    
+    # Bar Settings
+    bar_width_auto: bool = True
+    bar_width: int = 10        # Only if not auto
+    bar_spacing_auto: bool = True
+    bar_spacing: int = 2       # Only if not auto
+    
+    # Colors (gradient support)
+    bar_color_start: str = "#FFFFFF"
+    bar_color_end: str = "#FFFFFF"
+    shadow_color_start: str = "#333333"
+    shadow_color_end: str = "#000000"
+    
+    # Position
+    x: int = 0
+    y: int = 0
+    rotation: int = 0
+    opacity: float = 1.0
+
+
+@dataclass
+class SoundWaveConfig:
+    """Sound Wave visualizer settings (Astrofox style)."""
+    enabled: bool = True
+    
+    # Wave Settings
+    line_width: int = 1
+    wavelength: float = 0.0    # 0.0 - 1.0
+    smoothing: float = 0.0     # 0.0 - 0.99
+    
+    # Style
+    stroke: bool = True
+    stroke_color: str = "#FFFFFF"
+    fill: bool = False
+    fill_color: str = "#FFFFFF"
+    taper_edges: bool = False
+    
+    # Size
+    width: int = 854
+    height: int = 240
+    
+    # Position
+    x: int = 0
+    y: int = 0
+    rotation: int = 0
+    opacity: float = 1.0
+
+
+@dataclass
+class VisualizerConfig:
+    """Audio visualizer configuration (NEW - Astrofox style)."""
+    type: VisualizerType = VisualizerType.NONE
+    bar_spectrum: BarSpectrumConfig = field(default_factory=BarSpectrumConfig)
+    sound_wave: SoundWaveConfig = field(default_factory=SoundWaveConfig)
+
+
+@dataclass
+class SubtitleConfig:
+    """Subtitle/Lyrics settings from SRT files."""
+    enabled: bool = False
+    
+    # Styling
+    font_file: str = ""
+    font_size: int = 28
+    font_color: str = "white"
+    outline_color: str = "black"
+    outline_width: int = 2
+    
+    # Position (FFmpeg alignment: 1-9, where 1=bottom-left, 2=bottom-center, 5=center, etc.)
+    # 7 8 9 (top)
+    # 4 5 6 (middle)
+    # 1 2 3 (bottom)
+    alignment: int = 2  # Bottom center
+    margin_v: int = 60  # Vertical margin (pixels from edge)
+    margin_h: int = 20  # Horizontal margin (pixels from edge)
+    
+    # Background box (optional)
+    background_enabled: bool = False
+    background_color: str = "black"
+    background_opacity: float = 0.5  # 0.0 to 1.0
+
+
+@dataclass
 class AudioVisualizerConfig:
-    """Audio visualizer settings."""
+    """Audio visualizer settings (OLD - FFmpeg native filters)."""
     enabled: bool = False
     style: VisualizerStyle = VisualizerStyle.CUSTOM_BARS  # Default to custom renderer!
     color: str = "#3b82f6"  # Blue color
@@ -290,6 +422,129 @@ class AudioLayer:
     fade_in: float = 0.0  # Fade in duration
     fade_out: float = 0.0  # Fade out duration
     enabled: bool = True
+
+
+@dataclass
+class OverlayConfig:
+    """Advanced overlay configuration with blend modes and chroma key."""
+    enabled: bool = True
+    filepath: str = ""
+    
+    # Blend mode settings
+    blend_mode: BlendMode = BlendMode.NORMAL
+    opacity: float = 1.0  # 0.0 to 1.0
+    
+    # Chroma key settings (optional)
+    chroma_key_enabled: bool = False
+    key_color: str = "#00FF00"  # Default green screen
+    similarity: float = 0.3      # Color similarity threshold (0.01-1.0)
+    blend: float = 0.1           # Edge blending (0.0-1.0)
+    
+    # Timing (loop or custom duration)
+    loop: bool = True            # Loop for entire video duration
+    start_time: float = 0.0      # Start time in seconds (if not looping)
+    duration: float = 0.0        # Duration in seconds (0 = until end)
+    
+    # Position and size
+    size_percent: int = 30       # Size as percentage of video width
+    position: OverlayPosition = OverlayPosition.BOTTOM_LEFT
+    x_offset: int = 20
+    y_offset: int = 20
+    
+    def hex_to_rgb(self, hex_color: str) -> str:
+        """Convert hex color to RGB string for FFmpeg."""
+        hex_color = hex_color.lstrip('#')
+        if len(hex_color) == 6:
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            # FFmpeg format: 0xRRGGBB
+            return f"0x{r:02X}{g:02X}{b:02X}"
+        return "0x00FF00"  # Default green
+    
+    def get_chromakey_filter(self) -> str:
+        """
+        Generate FFmpeg chromakey filter string.
+        Uses colorkey for better control.
+        
+        Returns:
+            FFmpeg colorkey filter string.
+        """
+        if not self.filepath or not self.chroma_key_enabled:
+            return ""
+        
+        rgb_color = self.hex_to_rgb(self.key_color)
+        
+        # colorkey filter: colorkey=color:similarity:blend
+        return f"colorkey={rgb_color}:{self.similarity}:{self.blend}"
+    
+    def get_blend_mode_filter(self) -> str:
+        """
+        Generate FFmpeg blend mode filter.
+        
+        Returns:
+            Blend mode parameter for overlay filter.
+        """
+        if self.blend_mode == BlendMode.NORMAL:
+            return ""
+        
+        # FFmpeg blend mode names
+        return self.blend_mode.value
+    
+    def get_scale_filter(self, video_width: int) -> str:
+        """Get scale filter for the overlay."""
+        overlay_width = int(video_width * self.size_percent / 100)
+        return f"scale={overlay_width}:-1"
+    
+    def get_overlay_filter(self, video_width: int, video_height: int) -> str:
+        """
+        Generate FFmpeg overlay filter string with opacity.
+        Note: Blend modes require separate 'blend' filter which is complex for positioned overlays.
+        For now, we only support opacity via alpha channel.
+        
+        Args:
+            video_width: Target video width.
+            video_height: Target video height.
+            
+        Returns:
+            FFmpeg overlay filter string.
+        """
+        if not self.filepath:
+            return ""
+        
+        # Get position coordinates
+        x, y = self._get_position_coords(video_width, video_height)
+        
+        # Build overlay filter (without blend mode - that requires separate filter)
+        overlay_str = f"overlay={x}:{y}"
+        
+        # Add timing if not looping
+        if not self.loop and self.duration > 0:
+            overlay_str += f":enable='between(t,{self.start_time},{self.start_time + self.duration})'"
+        
+        return overlay_str
+    
+    def _get_position_coords(self, video_width: int, video_height: int) -> tuple:
+        """Calculate position coordinates based on preset."""
+        overlay_width = int(video_width * self.size_percent / 100)
+        overlay_height = overlay_width  # Approximate
+        
+        if self.position == OverlayPosition.TOP_LEFT:
+            return (self.x_offset, self.y_offset)
+        elif self.position == OverlayPosition.TOP_RIGHT:
+            return (f"W-w-{self.x_offset}", self.y_offset)
+        elif self.position == OverlayPosition.BOTTOM_LEFT:
+            return (self.x_offset, f"H-h-{self.y_offset}")
+        elif self.position == OverlayPosition.BOTTOM_RIGHT:
+            return (f"W-w-{self.x_offset}", f"H-h-{self.y_offset}")
+        elif self.position == OverlayPosition.CENTER:
+            return ("(W-w)/2", "(H-h)/2")
+        else:  # CUSTOM
+            return (self.x_offset, self.y_offset)
+
+
+# Legacy alias for backward compatibility
+ChromaKeyOverlay = OverlayConfig
 
 
 @dataclass
@@ -499,6 +754,26 @@ class MediaConfig:
     logo_overlay: LogoOverlay = field(default_factory=LogoOverlay)
     text_overlay: TextOverlay = field(default_factory=TextOverlay)
     audio_visualizer: AudioVisualizerConfig = field(default_factory=AudioVisualizerConfig)
+    
+    # Subtitles/Lyrics
+    subtitle_config: SubtitleConfig = field(default_factory=SubtitleConfig)
+    
+    # NEW: Astrofox-style visualizer
+    visualizer: VisualizerConfig = field(default_factory=VisualizerConfig)
+    
+    # Advanced overlays (blend modes + chroma key)
+    overlays: List[OverlayConfig] = field(default_factory=list)
+    
+    # Legacy alias for backward compatibility
+    @property
+    def chroma_key_overlays(self):
+        """Legacy property for backward compatibility."""
+        return self.overlays
+    
+    @chroma_key_overlays.setter
+    def chroma_key_overlays(self, value):
+        """Legacy setter for backward compatibility."""
+        self.overlays = value
     
     # Multi-text timeline
     animated_text_timeline: AnimatedTextTimeline = field(default_factory=AnimatedTextTimeline)

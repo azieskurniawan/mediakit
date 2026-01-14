@@ -9,9 +9,11 @@ from typing import List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
-from core.media_manager import MediaConfig, MediaMode, MediaManager, LoopMode, AudioSource, VisualizerStyle
+from core.media_manager import MediaConfig, MediaMode, MediaManager, LoopMode, AudioSource, VisualizerStyle, BlendMode, VisualizerType
 from core.audio_utils import AudioUtils
 from core.spectrum_renderer import SpectrumRenderer
+from core.audio_analyzer import AudioAnalyzer
+from core.visualizer_renderer import VisualizerRenderer
 
 
 class VideoCodec(Enum):
@@ -118,6 +120,10 @@ class FFmpegBuilder:
         self._audio_utils = AudioUtils(ffprobe_path)
         self._media_manager = MediaManager()
         self._temp_files: List[str] = []
+        
+        # NEW: Visualizer support (Astrofox-style)
+        self._audio_analyzer = AudioAnalyzer(ffmpeg_path, ffprobe_path)
+        self._visualizer_renderer = VisualizerRenderer()
     
     @property
     def ffmpeg_path(self) -> str:
@@ -212,6 +218,44 @@ class FFmpegBuilder:
                 spectrum_input_idx = next_input_idx
                 next_input_idx += 1
         
+        # TODO: NEW Visualizer (Astrofox-style) - For full export integration
+        # Generate visualizer video if enabled
+        visualizer_input_idx = None
+        if media_config.visualizer.type != VisualizerType.NONE:
+            from core.visualizer_preview import VisualizerPreviewGenerator
+            import tempfile
+            
+            # Generate visualizer video for full duration
+            visualizer_generator = VisualizerPreviewGenerator(self._ffmpeg_path)
+            
+            # Create temp output file
+            temp_viz_video = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+            temp_viz_video.close()
+            self._temp_files.append(temp_viz_video.name)
+            
+            print(f"Generating visualizer video for export (duration: {target_duration}s)...")
+            
+            success = visualizer_generator.generate_preview(
+                audio_files=media_config.audio_files if media_config.audio_files else [],
+                visualizer_config=media_config.visualizer,
+                output_file=temp_viz_video.name,
+                duration=target_duration,
+                fps=export_settings.fps,
+                width=export_settings.width,
+                height=export_settings.height,
+                background_color="#00000000",  # Transparent background
+                progress_callback=None
+            )
+            
+            if success:
+                # Add visualizer video as input with loop
+                cmd.extend(['-stream_loop', '-1', '-i', temp_viz_video.name])
+                visualizer_input_idx = next_input_idx
+                next_input_idx += 1
+                print(f"Visualizer video generated successfully")
+            else:
+                print("Failed to generate visualizer video")
+        
         # Input: SFX if enabled
         sfx_input_idx = None
         if media_config.sfx_enabled and media_config.sfx_file and media_config.beat_times:
@@ -226,6 +270,19 @@ class FFmpegBuilder:
                 if layer_config.enabled and layer_config.file_path:
                     cmd.extend(['-i', layer_config.file_path])
                     audio_layer_indices.append(next_input_idx)
+                    next_input_idx += 1
+        
+        # Input: Advanced overlays (blend modes + chroma key)
+        overlay_input_indices = []
+        if media_config.overlays:
+            for overlay_config in media_config.overlays:
+                if overlay_config.enabled and overlay_config.filepath:
+                    # Add loop parameter only if loop is enabled
+                    if overlay_config.loop:
+                        cmd.extend(['-stream_loop', '-1', '-i', overlay_config.filepath])
+                    else:
+                        cmd.extend(['-i', overlay_config.filepath])
+                    overlay_input_indices.append(next_input_idx)
                     next_input_idx += 1
         
         # Build audio filter (for static image, only AUDIO_DIRECTORY makes sense)
@@ -248,7 +305,9 @@ class FFmpegBuilder:
             media_config, export_settings,
             input_is_image=True,
             audio_stream_ref=audio_stream_ref,
-            spectrum_input_idx=spectrum_input_idx
+            spectrum_input_idx=spectrum_input_idx,
+            visualizer_input_idx=visualizer_input_idx,
+            chroma_key_input_indices=overlay_input_indices if overlay_input_indices else None
         )
         
         # Build SFX filter if enabled
@@ -379,6 +438,43 @@ class FFmpegBuilder:
                     spectrum_input_idx = next_input_idx
                     next_input_idx += 1
         
+        # NEW: Generate Astrofox visualizer video if enabled
+        visualizer_input_idx = None
+        if media_config.visualizer.type != VisualizerType.NONE:
+            from core.visualizer_preview import VisualizerPreviewGenerator
+            import tempfile
+            
+            # Generate visualizer video for full duration
+            visualizer_generator = VisualizerPreviewGenerator(self._ffmpeg_path)
+            
+            # Create temp output file
+            temp_viz_video = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+            temp_viz_video.close()
+            self._temp_files.append(temp_viz_video.name)
+            
+            print(f"Generating visualizer video for export (duration: {target_duration}s)...")
+            
+            success = visualizer_generator.generate_preview(
+                audio_files=media_config.audio_files if media_config.audio_files else [],
+                visualizer_config=media_config.visualizer,
+                output_file=temp_viz_video.name,
+                duration=target_duration,
+                fps=export_settings.fps,
+                width=export_settings.width,
+                height=export_settings.height,
+                background_color="#00000000",  # Transparent background
+                progress_callback=None
+            )
+            
+            if success:
+                # Add visualizer video as input with loop
+                cmd.extend(['-stream_loop', '-1', '-i', temp_viz_video.name])
+                visualizer_input_idx = next_input_idx
+                next_input_idx += 1
+                print(f"Visualizer video generated successfully")
+            else:
+                print("Failed to generate visualizer video")
+        
         # Input: logo if enabled
         logo_input_idx = None
         if media_config.logo_overlay.enabled and media_config.logo_overlay.filepath:
@@ -400,6 +496,19 @@ class FFmpegBuilder:
                 if layer_config.enabled and layer_config.file_path:
                     cmd.extend(['-i', layer_config.file_path])
                     audio_layer_indices.append(next_input_idx)
+                    next_input_idx += 1
+        
+        # Input: Advanced overlays (blend modes + chroma key)
+        overlay_input_indices = []
+        if media_config.overlays:
+            for overlay_config in media_config.overlays:
+                if overlay_config.enabled and overlay_config.filepath:
+                    # Add loop parameter only if loop is enabled
+                    if overlay_config.loop:
+                        cmd.extend(['-stream_loop', '-1', '-i', overlay_config.filepath])
+                    else:
+                        cmd.extend(['-i', overlay_config.filepath])
+                    overlay_input_indices.append(next_input_idx)
                     next_input_idx += 1
         
         # Build audio filter based on audio source mode
@@ -427,7 +536,9 @@ class FFmpegBuilder:
             input_is_image=False,
             logo_input_idx=logo_input_idx,
             audio_stream_ref=audio_stream_ref,
-            spectrum_input_idx=spectrum_input_idx
+            spectrum_input_idx=spectrum_input_idx,
+            visualizer_input_idx=visualizer_input_idx,
+            chroma_key_input_indices=overlay_input_indices if overlay_input_indices else None
         )
         
         # Build SFX filter if enabled (needs to work with audio filter)
@@ -480,7 +591,9 @@ class FFmpegBuilder:
         input_is_image: bool = False,
         logo_input_idx: Optional[int] = None,
         audio_stream_ref: str = "0:a",
-        spectrum_input_idx: Optional[int] = None
+        spectrum_input_idx: Optional[int] = None,
+        visualizer_input_idx: Optional[int] = None,
+        chroma_key_input_indices: Optional[List[int]] = None
     ) -> str:
         """Build filter_complex string."""
         filters = []
@@ -530,6 +643,31 @@ class FFmpegBuilder:
                 filters.append(f"{current_output}{text_filter}[text{idx}]")
                 current_output = f"[text{idx}]"
         
+        # Add subtitle/lyrics from SRT files
+        if media_config.subtitle_config.enabled and media_config.audio_files:
+            # Find SRT files for each audio
+            srt_files = []
+            for audio_file in media_config.audio_files:
+                srt_path = self._find_srt_for_audio(audio_file)
+                if srt_path:
+                    srt_files.append(srt_path)
+                    print(f"✓ Found SRT: {srt_path}")
+                else:
+                    print(f"✗ No SRT for: {audio_file}")
+            
+            print(f"\nTotal SRT files found: {len(srt_files)} / {len(media_config.audio_files)}")
+            
+            if srt_files:
+                subtitle_filter = self._build_subtitle_filter(media_config, srt_files)
+                if subtitle_filter:
+                    print(f"Subtitle filter: {subtitle_filter[:100]}...")
+                    filters.append(f"{current_output}{subtitle_filter}[withsub]")
+                    current_output = "[withsub]"
+                else:
+                    print("Warning: Subtitle filter is empty!")
+            else:
+                print("Warning: No SRT files found, subtitle disabled")
+        
         # Add audio visualizer if enabled
         if media_config.audio_visualizer.enabled:
             # Check if custom spectrum video input exists
@@ -549,6 +687,48 @@ class FFmpegBuilder:
                     filters.append(f"{current_output}[viz]{viz_overlay}[withviz]")
                     current_output = "[withviz]"
         
+        # Add chroma key overlays
+        if chroma_key_input_indices and media_config.overlays:
+            for idx, (overlay_config, input_idx) in enumerate(zip(media_config.overlays, chroma_key_input_indices)):
+                if overlay_config.enabled and overlay_config.filepath:
+                    # Scale overlay
+                    overlay_scale = overlay_config.get_scale_filter(export_settings.width)
+                    filters.append(f"[{input_idx}:v]{overlay_scale}[ck{idx}_scaled]")
+                    
+                    current_overlay = f"[ck{idx}_scaled]"
+                    
+                    # Apply chroma key (colorkey filter) if enabled
+                    if overlay_config.chroma_key_enabled:
+                        chromakey_filter = overlay_config.get_chromakey_filter()
+                        if chromakey_filter:
+                            filters.append(f"{current_overlay}{chromakey_filter}[ck{idx}_keyed]")
+                            current_overlay = f"[ck{idx}_keyed]"
+                    
+                    # Apply opacity if < 1.0 (using colorchannelmixer to adjust alpha)
+                    if overlay_config.opacity < 1.0:
+                        opacity_val = overlay_config.opacity
+                        filters.append(f"{current_overlay}format=yuva420p,colorchannelmixer=aa={opacity_val}[ck{idx}_alpha]")
+                        current_overlay = f"[ck{idx}_alpha]"
+                    
+                    # Apply blend mode if not NORMAL
+                    if overlay_config.blend_mode != BlendMode.NORMAL:
+                        blend_mode = overlay_config.blend_mode.value
+                        # For blend filter, both inputs must be same size, so we need to pad the overlay
+                        filters.append(f"{current_overlay}scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2[ck{idx}_padded]")
+                        filters.append(f"{current_output}[ck{idx}_padded]blend=all_mode={blend_mode}[ck{idx}]")
+                        current_output = f"[ck{idx}]"
+                    else:
+                        # Normal overlay (with position)
+                        overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
+                        filters.append(f"{current_output}{current_overlay}{overlay_pos}[ck{idx}]")
+                        current_output = f"[ck{idx}]"
+        
+        # NEW: Add Astrofox visualizer overlay (LAST - so it's on top)
+        if visualizer_input_idx is not None:
+            # Overlay visualizer video (already rendered with correct size and transparency)
+            filters.append(f"{current_output}[{visualizer_input_idx}:v]overlay=0:0[withviz]")
+            current_output = "[withviz]"
+        
         # Final output
         if filters:
             # Replace last output label with [vout]
@@ -560,6 +740,210 @@ class FFmpegBuilder:
             return ";".join(filters)
         
         return ""
+    
+    def _find_srt_for_audio(self, audio_path: str) -> Optional[str]:
+        """
+        Find SRT file with same name as audio file.
+        
+        Args:
+            audio_path: Path to audio file (or concat file)
+            
+        Returns:
+            Path to SRT file if found, None otherwise.
+        """
+        # If audio_path is a concat file, skip
+        if audio_path.endswith('.txt'):
+            return None
+        
+        audio_file = Path(audio_path)
+        srt_path = audio_file.with_suffix('.srt')
+        
+        if srt_path.exists():
+            return str(srt_path)
+        
+        return None
+    
+    def _build_subtitle_filter(self, media_config: MediaConfig, srt_files: List[str]) -> str:
+        """
+        Build FFmpeg subtitle filter for multiple SRT files.
+        
+        Args:
+            media_config: Media configuration with subtitle settings.
+            srt_files: List of SRT file paths (in order, matching audio files).
+            
+        Returns:
+            FFmpeg subtitles filter string, or empty if no subtitles.
+        """
+        if not media_config.subtitle_config.enabled or not srt_files:
+            return ""
+        
+        sub_config = media_config.subtitle_config
+        
+        # Build force_style parameter for subtitle styling
+        # FFmpeg color format: &HBBGGRR& (BGR, not RGB!)
+        def color_to_ffmpeg(color_str: str) -> str:
+            """Convert color name/hex to FFmpeg format."""
+            # Try to parse as hex first
+            if color_str.startswith('#'):
+                hex_color = color_str.lstrip('#')
+                if len(hex_color) == 6:
+                    r = int(hex_color[0:2], 16)
+                    g = int(hex_color[2:4], 16)
+                    b = int(hex_color[4:6], 16)
+                    return f"&H{b:02X}{g:02X}{r:02X}&"
+            
+            # Named colors to FFmpeg format
+            color_map = {
+                'white': '&HFFFFFF&',
+                'black': '&H000000&',
+                'red': '&H0000FF&',
+                'green': '&H00FF00&',
+                'blue': '&HFF0000&',
+                'yellow': '&H00FFFF&',
+            }
+            return color_map.get(color_str.lower(), '&HFFFFFF&')
+        
+        font_color = color_to_ffmpeg(sub_config.font_color)
+        outline_color = color_to_ffmpeg(sub_config.outline_color)
+        
+        # Build force_style string
+        force_style_parts = [
+            f"FontSize={sub_config.font_size}",
+            f"PrimaryColour={font_color}",
+            f"OutlineColour={outline_color}",
+            f"Outline={sub_config.outline_width}",
+            f"Alignment={sub_config.alignment}",
+            f"MarginV={sub_config.margin_v}",
+        ]
+        
+        if sub_config.font_file and os.path.isfile(sub_config.font_file):
+            font_name = Path(sub_config.font_file).stem
+            force_style_parts.insert(0, f"FontName={font_name}")
+        
+        force_style = ','.join(force_style_parts)
+        
+        # For multiple SRT files, we'll concatenate them into one temp file
+        # with adjusted timings
+        if len(srt_files) > 1:
+            # Create merged SRT with adjusted timings
+            merged_srt = self._merge_srt_files(srt_files, media_config)
+            if merged_srt:
+                srt_to_use = merged_srt
+            else:
+                # If merge failed, use first SRT only
+                srt_to_use = srt_files[0]
+        else:
+            srt_to_use = srt_files[0]
+        
+        # Escape path for FFmpeg (Windows paths)
+        escaped_path = str(srt_to_use).replace('\\', '/').replace(':', '\\:')
+        
+        # Build subtitles filter
+        subtitle_filter = f"subtitles='{escaped_path}':force_style='{force_style}'"
+        
+        return subtitle_filter
+    
+    def _merge_srt_files(self, srt_files: List[str], media_config: MediaConfig) -> Optional[str]:
+        """
+        Merge multiple SRT files into one with adjusted timings.
+        Each SRT file corresponds to one audio file in sequence.
+        
+        Args:
+            srt_files: List of SRT file paths.
+            media_config: Media configuration.
+            
+        Returns:
+            Path to merged SRT file, or None if failed.
+        """
+        try:
+            # Calculate cumulative offsets based on audio file durations
+            audio_files = media_config.audio_files
+            if len(audio_files) != len(srt_files):
+                # Mismatch - cannot merge properly
+                return None
+            
+            cumulative_offset = 0.0
+            merged_content = []
+            subtitle_index = 1
+            
+            for audio_file, srt_file in zip(audio_files, srt_files):
+                # Get audio duration
+                audio_duration = self._audio_utils.get_duration(audio_file)
+                if not audio_duration:
+                    audio_duration = 180.0  # Default 3 minutes
+                
+                # Read SRT file
+                if not os.path.exists(srt_file):
+                    cumulative_offset += audio_duration
+                    continue
+                
+                with open(srt_file, 'r', encoding='utf-8') as f:
+                    srt_content = f.read()
+                
+                # Parse SRT and adjust timings
+                import re
+                
+                # SRT format:
+                # 1
+                # 00:00:10,500 --> 00:00:13,000
+                # Text here
+                
+                pattern = r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\n|\Z)'
+                
+                def adjust_timestamp(timestamp: str, offset_seconds: float) -> str:
+                    """Adjust SRT timestamp by offset."""
+                    # Parse: HH:MM:SS,mmm
+                    parts = timestamp.split(',')
+                    time_parts = parts[0].split(':')
+                    hours = int(time_parts[0])
+                    minutes = int(time_parts[1])
+                    seconds = int(time_parts[2])
+                    milliseconds = int(parts[1])
+                    
+                    # Convert to total seconds
+                    total_seconds = hours * 3600 + minutes * 60 + seconds + milliseconds / 1000.0
+                    
+                    # Add offset
+                    total_seconds += offset_seconds
+                    
+                    # Convert back
+                    hours = int(total_seconds // 3600)
+                    minutes = int((total_seconds % 3600) // 60)
+                    seconds = int(total_seconds % 60)
+                    milliseconds = int((total_seconds % 1) * 1000)
+                    
+                    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+                
+                for match in re.finditer(pattern, srt_content, re.DOTALL):
+                    start_time = adjust_timestamp(match.group(2), cumulative_offset)
+                    end_time = adjust_timestamp(match.group(3), cumulative_offset)
+                    text = match.group(4).strip()
+                    
+                    merged_content.append(f"{subtitle_index}\n{start_time} --> {end_time}\n{text}\n\n")
+                    subtitle_index += 1
+                
+                # Update offset for next audio
+                cumulative_offset += audio_duration
+            
+            if not merged_content:
+                return None
+            
+            # Write merged SRT to temp file
+            temp_srt = tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.srt',
+                delete=False,
+                encoding='utf-8'
+            )
+            temp_srt.write(''.join(merged_content))
+            temp_srt.close()
+            
+            self._temp_files.append(temp_srt.name)
+            return temp_srt.name
+            
+        except Exception as e:
+            print(f"Warning: Failed to merge SRT files: {e}")
+            return None
     
     def _get_audio_source(self, media_config: MediaConfig) -> Tuple[str, float]:
         """
@@ -950,6 +1334,19 @@ class FFmpegBuilder:
                     audio_layer_indices.append(next_input_idx)
                     next_input_idx += 1
         
+        # Input: Advanced overlays (blend modes + chroma key)
+        overlay_input_indices = []
+        if media_config.overlays:
+            for overlay_config in media_config.overlays:
+                if overlay_config.enabled and overlay_config.filepath:
+                    # Add loop parameter only if loop is enabled
+                    if overlay_config.loop:
+                        cmd.extend(['-stream_loop', '-1', '-i', overlay_config.filepath])
+                    else:
+                        cmd.extend(['-i', overlay_config.filepath])
+                    overlay_input_indices.append(next_input_idx)
+                    next_input_idx += 1
+        
         # Build xfade filter chain for video
         transition_duration = media_config.transition_duration
         transition_type = media_config.transition_type
@@ -1006,10 +1403,59 @@ class FFmpegBuilder:
             xfade_filters.append(f"{current_output}{drawtext}[withtext]")
             current_output = "[withtext]"
         
+        # Add animated text timeline
+        if media_config.animated_text_timeline.enabled:
+            text_filters = media_config.animated_text_timeline.get_all_filters()
+            for idx, text_filter in enumerate(text_filters):
+                xfade_filters.append(f"{current_output}{text_filter}[text{idx}]")
+                current_output = f"[text{idx}]"
+        
         # Add audio visualizer overlay if enabled
         if spectrum_input_idx is not None:
             viz_overlay = media_config.audio_visualizer.get_overlay_position()
             xfade_filters.append(f"{current_output}[{spectrum_input_idx}:v]{viz_overlay}[withviz]")
+            current_output = "[withviz]"
+        
+        # Add chroma key overlays
+        if overlay_input_indices and media_config.overlays:
+            for idx, (overlay_config, input_idx) in enumerate(zip(media_config.overlays, overlay_input_indices)):
+                if overlay_config.enabled and overlay_config.filepath:
+                    # Scale overlay
+                    overlay_scale = overlay_config.get_scale_filter(export_settings.width)
+                    xfade_filters.append(f"[{input_idx}:v]{overlay_scale}[ck{idx}_scaled]")
+                    
+                    current_overlay = f"[ck{idx}_scaled]"
+                    
+                    # Apply chroma key if enabled
+                    if overlay_config.chroma_key_enabled:
+                        chromakey_filter = overlay_config.get_chromakey_filter()
+                        if chromakey_filter:
+                            xfade_filters.append(f"{current_overlay}{chromakey_filter}[ck{idx}_keyed]")
+                            current_overlay = f"[ck{idx}_keyed]"
+                    
+                    # Apply opacity if < 1.0
+                    if overlay_config.opacity < 1.0:
+                        opacity_val = overlay_config.opacity
+                        xfade_filters.append(f"{current_overlay}format=yuva420p,colorchannelmixer=aa={opacity_val}[ck{idx}_alpha]")
+                        current_overlay = f"[ck{idx}_alpha]"
+                    
+                    # Apply blend mode if not NORMAL
+                    if overlay_config.blend_mode != BlendMode.NORMAL:
+                        blend_mode = overlay_config.blend_mode.value
+                        # Pad overlay to match video size for blend filter
+                        xfade_filters.append(f"{current_overlay}scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2[ck{idx}_padded]")
+                        xfade_filters.append(f"{current_output}[ck{idx}_padded]blend=all_mode={blend_mode}[ck{idx}]")
+                        current_output = f"[ck{idx}]"
+                    else:
+                        # Normal overlay (with position)
+                        overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
+                        xfade_filters.append(f"{current_output}{current_overlay}{overlay_pos}[ck{idx}]")
+                        current_output = f"[ck{idx}]"
+        
+        # NEW: Add Astrofox visualizer overlay (LAST - so it's on top)
+        if visualizer_input_idx is not None:
+            # Overlay visualizer video (already rendered with correct size and transparency)
+            xfade_filters.append(f"{current_output}[{visualizer_input_idx}:v]overlay=0:0[withviz]")
             current_output = "[withviz]"
         
         # Final output

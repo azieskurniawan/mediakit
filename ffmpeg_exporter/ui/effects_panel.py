@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
-from core.media_manager import LogoOverlay, TextOverlay, AudioVisualizerConfig, OverlayPosition, VisualizerStyle
+from core.media_manager import LogoOverlay, TextOverlay, AudioVisualizerConfig, SubtitleConfig, OverlayPosition, VisualizerStyle
 
 
 class EffectsPanel(QWidget):
@@ -24,6 +24,7 @@ class EffectsPanel(QWidget):
         self._logo_overlay = LogoOverlay()
         self._text_overlay = TextOverlay()
         self._audio_visualizer = AudioVisualizerConfig()
+        self._subtitle_config = SubtitleConfig()
         self._setup_ui()
     
     def _setup_ui(self) -> None:
@@ -49,6 +50,10 @@ class EffectsPanel(QWidget):
         # Audio visualizer section
         viz_group = self._create_visualizer_section()
         layout.addWidget(viz_group)
+        
+        # Subtitle/Lyrics section
+        subtitle_group = self._create_subtitle_section()
+        layout.addWidget(subtitle_group)
         
         layout.addStretch()
         
@@ -456,6 +461,171 @@ class EffectsPanel(QWidget):
         
         return group
     
+    def _create_subtitle_section(self) -> QGroupBox:
+        """Create the subtitle/lyrics section."""
+        group = QGroupBox("SUBTITLE / LIRIK (SRT)")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(12)
+        
+        # Enable checkbox
+        self._subtitle_enabled_cb = QCheckBox("Tampilkan Subtitle/Lirik dari SRT")
+        self._subtitle_enabled_cb.setToolTip(
+            "Otomatis mencari file SRT dengan nama yang sama dengan audio.\n"
+            "Contoh: jika audio = lagu.mp3, akan mencari lagu.srt"
+        )
+        self._subtitle_enabled_cb.stateChanged.connect(self._on_subtitle_enabled_changed)
+        layout.addWidget(self._subtitle_enabled_cb)
+        
+        # Subtitle content (disabled by default)
+        self._subtitle_content = QWidget()
+        subtitle_layout = QVBoxLayout(self._subtitle_content)
+        subtitle_layout.setContentsMargins(0, 0, 0, 0)
+        subtitle_layout.setSpacing(8)
+        
+        # Info label
+        info_label = QLabel("📝 Styling berlaku untuk SEMUA subtitle")
+        info_label.setStyleSheet("color: #00d4ff; font-size: 11px; font-style: italic;")
+        subtitle_layout.addWidget(info_label)
+        
+        # Font file selection (optional)
+        font_label = QLabel("Font (Opsional):")
+        subtitle_layout.addWidget(font_label)
+        
+        font_row = QHBoxLayout()
+        self._subtitle_font_edit = QLineEdit()
+        self._subtitle_font_edit.setPlaceholderText("Font default sistem jika kosong...")
+        self._subtitle_font_edit.setReadOnly(True)
+        font_row.addWidget(self._subtitle_font_edit)
+        
+        font_btn = QPushButton("Browse...")
+        font_btn.setFixedWidth(100)
+        font_btn.clicked.connect(self._browse_subtitle_font)
+        font_row.addWidget(font_btn)
+        subtitle_layout.addLayout(font_row)
+        
+        # Font size
+        size_row = QHBoxLayout()
+        size_label = QLabel("Ukuran Font:")
+        size_row.addWidget(size_label)
+        
+        self._subtitle_font_size_spin = QSpinBox()
+        self._subtitle_font_size_spin.setRange(12, 80)
+        self._subtitle_font_size_spin.setValue(28)
+        self._subtitle_font_size_spin.valueChanged.connect(self._emit_settings_changed)
+        size_row.addWidget(self._subtitle_font_size_spin)
+        size_row.addStretch()
+        subtitle_layout.addLayout(size_row)
+        
+        # Font color
+        color_row = QHBoxLayout()
+        color_label = QLabel("Warna Teks:")
+        color_row.addWidget(color_label)
+        
+        self._subtitle_color_btn = QPushButton()
+        self._subtitle_color_btn.setFixedSize(80, 30)
+        self._subtitle_color_btn.setStyleSheet("background-color: white; border: 1px solid #0f3460;")
+        self._subtitle_color_btn.clicked.connect(self._pick_subtitle_color)
+        self._subtitle_font_color = "white"
+        color_row.addWidget(self._subtitle_color_btn)
+        
+        self._subtitle_color_edit = QLineEdit("white")
+        self._subtitle_color_edit.setFixedWidth(100)
+        self._subtitle_color_edit.textChanged.connect(self._on_subtitle_color_changed)
+        color_row.addWidget(self._subtitle_color_edit)
+        
+        color_row.addStretch()
+        subtitle_layout.addLayout(color_row)
+        
+        # Outline color
+        outline_row = QHBoxLayout()
+        outline_label = QLabel("Warna Outline:")
+        outline_row.addWidget(outline_label)
+        
+        self._subtitle_outline_btn = QPushButton()
+        self._subtitle_outline_btn.setFixedSize(80, 30)
+        self._subtitle_outline_btn.setStyleSheet("background-color: black; border: 1px solid #0f3460;")
+        self._subtitle_outline_btn.clicked.connect(self._pick_subtitle_outline)
+        self._subtitle_outline_color = "black"
+        outline_row.addWidget(self._subtitle_outline_btn)
+        
+        self._subtitle_outline_edit = QLineEdit("black")
+        self._subtitle_outline_edit.setFixedWidth(100)
+        self._subtitle_outline_edit.textChanged.connect(self._on_subtitle_outline_changed)
+        outline_row.addWidget(self._subtitle_outline_edit)
+        
+        outline_row.addStretch()
+        subtitle_layout.addLayout(outline_row)
+        
+        # Outline width
+        outline_width_row = QHBoxLayout()
+        outline_width_label = QLabel("Ketebalan Outline:")
+        outline_width_row.addWidget(outline_width_label)
+        
+        self._subtitle_outline_width_spin = QSpinBox()
+        self._subtitle_outline_width_spin.setRange(0, 5)
+        self._subtitle_outline_width_spin.setValue(2)
+        self._subtitle_outline_width_spin.valueChanged.connect(self._emit_settings_changed)
+        outline_width_row.addWidget(self._subtitle_outline_width_spin)
+        outline_width_row.addStretch()
+        subtitle_layout.addLayout(outline_width_row)
+        
+        # Position (alignment)
+        pos_label = QLabel("Posisi:")
+        subtitle_layout.addWidget(pos_label)
+        
+        self._subtitle_alignment_combo = QComboBox()
+        self._subtitle_alignment_combo.addItems([
+            "Bottom Center (Default)",
+            "Top Center",
+            "Center",
+            "Bottom Left",
+            "Bottom Right"
+        ])
+        self._subtitle_alignment_combo.setCurrentIndex(0)  # Bottom Center
+        self._subtitle_alignment_combo.currentIndexChanged.connect(self._emit_settings_changed)
+        subtitle_layout.addWidget(self._subtitle_alignment_combo)
+        
+        # Margin vertical
+        margin_row = QHBoxLayout()
+        margin_label = QLabel("Margin Vertikal (px):")
+        margin_row.addWidget(margin_label)
+        
+        self._subtitle_margin_v_spin = QSpinBox()
+        self._subtitle_margin_v_spin.setRange(0, 200)
+        self._subtitle_margin_v_spin.setValue(60)
+        self._subtitle_margin_v_spin.valueChanged.connect(self._emit_settings_changed)
+        margin_row.addWidget(self._subtitle_margin_v_spin)
+        margin_row.addStretch()
+        subtitle_layout.addLayout(margin_row)
+        
+        # Preview button
+        preview_subtitle_btn = QPushButton("👁 Preview Dummy Text")
+        preview_subtitle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #00d4ff;
+                color: #0a0a14;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #00b8e6;
+            }
+            QPushButton:disabled {
+                background-color: #4a5568;
+                color: #8892b0;
+            }
+        """)
+        preview_subtitle_btn.clicked.connect(self._on_subtitle_preview_requested)
+        subtitle_layout.addWidget(preview_subtitle_btn)
+        
+        self._subtitle_content.setEnabled(False)
+        layout.addWidget(self._subtitle_content)
+        
+        return group
+    
     def _on_logo_enabled_changed(self, state: int) -> None:
         """Handle logo enabled state change."""
         enabled = state == Qt.CheckState.Checked.value
@@ -602,6 +772,97 @@ class EffectsPanel(QWidget):
         if self._viz_enabled_cb.isChecked():
             self.preview_requested.emit()
     
+    def _on_subtitle_enabled_changed(self, state: int) -> None:
+        """Handle subtitle enabled state change."""
+        enabled = state == Qt.CheckState.Checked.value
+        self._subtitle_content.setEnabled(enabled)
+        self._subtitle_config.enabled = enabled
+        self.settings_changed.emit()
+    
+    def _browse_subtitle_font(self) -> None:
+        """Browse for subtitle font file."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select Font File", "",
+            "Font Files (*.ttf *.otf)"
+        )
+        if filepath:
+            self._subtitle_font_edit.setText(filepath)
+            self._subtitle_config.font_file = filepath
+            self.settings_changed.emit()
+    
+    def _pick_subtitle_color(self) -> None:
+        """Open color picker for subtitle text."""
+        color = QColorDialog.getColor(QColor(self._subtitle_font_color), self, "Select Subtitle Color")
+        if color.isValid():
+            self._subtitle_font_color = color.name()
+            self._subtitle_color_btn.setStyleSheet(
+                f"background-color: {self._subtitle_font_color}; border: 1px solid #0f3460;"
+            )
+            self._subtitle_color_edit.setText(self._subtitle_font_color)
+            self._subtitle_config.font_color = self._subtitle_font_color
+            self.settings_changed.emit()
+    
+    def _on_subtitle_color_changed(self, text: str) -> None:
+        """Handle subtitle color text change."""
+        self._subtitle_font_color = text
+        self._subtitle_config.font_color = text
+        try:
+            self._subtitle_color_btn.setStyleSheet(
+                f"background-color: {text}; border: 1px solid #0f3460;"
+            )
+        except:
+            pass
+        self.settings_changed.emit()
+    
+    def _pick_subtitle_outline(self) -> None:
+        """Open color picker for subtitle outline."""
+        color = QColorDialog.getColor(QColor(self._subtitle_outline_color), self, "Select Outline Color")
+        if color.isValid():
+            self._subtitle_outline_color = color.name()
+            self._subtitle_outline_btn.setStyleSheet(
+                f"background-color: {self._subtitle_outline_color}; border: 1px solid #0f3460;"
+            )
+            self._subtitle_outline_edit.setText(self._subtitle_outline_color)
+            self._subtitle_config.outline_color = self._subtitle_outline_color
+            self.settings_changed.emit()
+    
+    def _on_subtitle_outline_changed(self, text: str) -> None:
+        """Handle subtitle outline color text change."""
+        self._subtitle_outline_color = text
+        self._subtitle_config.outline_color = text
+        try:
+            self._subtitle_outline_btn.setStyleSheet(
+                f"background-color: {text}; border: 1px solid #0f3460;"
+            )
+        except:
+            pass
+        self.settings_changed.emit()
+    
+    def _on_subtitle_preview_requested(self) -> None:
+        """Handle subtitle preview button click."""
+        from ui.subtitle_preview_dialog import SubtitlePreviewDialog
+        
+        # Get current subtitle settings
+        self._update_subtitle_config_from_ui()
+        
+        # Show preview dialog
+        dialog = SubtitlePreviewDialog(self._subtitle_config, self)
+        dialog.exec()
+    
+    def _update_subtitle_config_from_ui(self) -> None:
+        """Update subtitle config from UI values."""
+        self._subtitle_config.enabled = self._subtitle_enabled_cb.isChecked()
+        self._subtitle_config.font_file = self._subtitle_font_edit.text()
+        self._subtitle_config.font_size = self._subtitle_font_size_spin.value()
+        self._subtitle_config.font_color = self._subtitle_color_edit.text()
+        self._subtitle_config.outline_color = self._subtitle_outline_edit.text()
+        self._subtitle_config.outline_width = self._subtitle_outline_width_spin.value()
+        self._subtitle_config.margin_v = self._subtitle_margin_v_spin.value()
+        
+        # Map alignment combo to FFmpeg alignment (1-9)
+        alignment_map = [2, 8, 5, 1, 3]  # bottom-center, top-center, center, bottom-left, bottom-right
+        self._subtitle_config.alignment = alignment_map[self._subtitle_alignment_combo.currentIndex()]
+    
     def _emit_settings_changed(self) -> None:
         """Emit settings changed signal."""
         self.settings_changed.emit()
@@ -654,10 +915,14 @@ class EffectsPanel(QWidget):
         self._audio_visualizer.width = self._viz_width_spin.value()
         self._audio_visualizer.height = self._viz_height_spin.value()
         
+        # Update subtitle config from UI
+        self._update_subtitle_config_from_ui()
+        
         return {
             'logo_overlay': self._logo_overlay,
             'text_overlay': self._text_overlay,
             'audio_visualizer': self._audio_visualizer,
+            'subtitle_config': self._subtitle_config,
         }
     
     def set_settings(self, settings: dict) -> None:
@@ -713,3 +978,19 @@ class EffectsPanel(QWidget):
             self._viz_width_spin.setValue(viz.width)
             self._viz_height_spin.setValue(viz.height)
             self._audio_visualizer = viz
+        
+        if 'subtitle_config' in settings:
+            sub = settings['subtitle_config']
+            self._subtitle_enabled_cb.setChecked(sub.enabled)
+            self._subtitle_font_edit.setText(sub.font_file)
+            self._subtitle_font_size_spin.setValue(sub.font_size)
+            self._subtitle_color_edit.setText(sub.font_color)
+            self._subtitle_outline_edit.setText(sub.outline_color)
+            self._subtitle_outline_width_spin.setValue(sub.outline_width)
+            self._subtitle_margin_v_spin.setValue(sub.margin_v)
+            
+            # Map alignment back to combo index
+            alignment_reverse_map = {2: 0, 8: 1, 5: 2, 1: 3, 3: 4}
+            self._subtitle_alignment_combo.setCurrentIndex(alignment_reverse_map.get(sub.alignment, 0))
+            
+            self._subtitle_config = sub
