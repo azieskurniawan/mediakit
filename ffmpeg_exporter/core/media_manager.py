@@ -526,6 +526,10 @@ class OverlayConfig:
         # Get position coordinates
         x, y = self._get_position_coords(video_width, video_height)
         
+        # DEBUG: Print coordinates for troubleshooting
+        print(f"[OVERLAY DEBUG] Position: {self.position.value}, Size: {self.size_percent}%")
+        print(f"[OVERLAY DEBUG] Coordinates: x={x}, y={y}")
+        
         # Build overlay filter (without blend mode - that requires separate filter)
         overlay_str = f"overlay={x}:{y}"
         
@@ -533,6 +537,7 @@ class OverlayConfig:
         if not self.loop and self.duration > 0:
             overlay_str += f":enable='between(t,{self.start_time},{self.start_time + self.duration})'"
         
+        print(f"[OVERLAY DEBUG] Filter: {overlay_str}")
         return overlay_str
     
     def _get_position_coords(self, video_width: int, video_height: int) -> tuple:

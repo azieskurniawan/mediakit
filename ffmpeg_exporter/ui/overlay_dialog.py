@@ -99,29 +99,48 @@ class OverlayPreviewFrame(QFrame):
         self.size_label.setAlignment(Qt.AlignCenter)
     
     def update_preview(self, size_percent, position, x_offset, y_offset, opacity=1.0):
-        """Update preview based on settings."""
+        """Update preview based on settings (9 positions - 3x3 grid)."""
         frame_w, frame_h = 640, 360
         
         # Calculate overlay size
         overlay_w = int(frame_w * size_percent / 100)
         overlay_h = int(overlay_w * 0.5625)  # 16:9 aspect
         
-        # Calculate position
+        # Calculate position (3x3 grid)
+        # Top row
         if position == OverlayPosition.TOP_LEFT:
             x = int(x_offset * frame_w / 1920)
+            y = int(y_offset * frame_h / 1080)
+        elif position == OverlayPosition.TOP_CENTER:
+            x = (frame_w - overlay_w) // 2
             y = int(y_offset * frame_h / 1080)
         elif position == OverlayPosition.TOP_RIGHT:
             x = frame_w - overlay_w - int(x_offset * frame_w / 1920)
             y = int(y_offset * frame_h / 1080)
+        
+        # Middle row
+        elif position == OverlayPosition.CENTER_LEFT:
+            x = int(x_offset * frame_w / 1920)
+            y = (frame_h - overlay_h) // 2
+        elif position == OverlayPosition.CENTER:
+            x = (frame_w - overlay_w) // 2
+            y = (frame_h - overlay_h) // 2
+        elif position == OverlayPosition.CENTER_RIGHT:
+            x = frame_w - overlay_w - int(x_offset * frame_w / 1920)
+            y = (frame_h - overlay_h) // 2
+        
+        # Bottom row
         elif position == OverlayPosition.BOTTOM_LEFT:
             x = int(x_offset * frame_w / 1920)
+            y = frame_h - overlay_h - int(y_offset * frame_h / 1080)
+        elif position == OverlayPosition.BOTTOM_CENTER:
+            x = (frame_w - overlay_w) // 2
             y = frame_h - overlay_h - int(y_offset * frame_h / 1080)
         elif position == OverlayPosition.BOTTOM_RIGHT:
             x = frame_w - overlay_w - int(x_offset * frame_w / 1920)
             y = frame_h - overlay_h - int(y_offset * frame_h / 1080)
-        elif position == OverlayPosition.CENTER:
-            x = (frame_w - overlay_w) // 2
-            y = (frame_h - overlay_h) // 2
+        
+        # Custom
         else:  # CUSTOM
             x = int(x_offset * frame_w / 1920)
             y = int(y_offset * frame_h / 1080)
