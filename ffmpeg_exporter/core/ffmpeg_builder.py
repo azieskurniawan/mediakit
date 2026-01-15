@@ -713,9 +713,21 @@ class FFmpegBuilder:
                     # Apply blend mode if not NORMAL
                     if overlay_config.blend_mode != BlendMode.NORMAL:
                         blend_mode = overlay_config.blend_mode.value
-                        # For blend filter, both inputs must be same size, so we need to pad the overlay
-                        filters.append(f"{current_overlay}scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2[ck{idx}_padded]")
-                        filters.append(f"{current_output}[ck{idx}_padded]blend=all_mode={blend_mode}[ck{idx}]")
+                        
+                        # For blend mode with positioning:
+                        # 1. Create a transparent canvas matching video size
+                        # 2. Overlay the scaled overlay onto canvas at desired position
+                        # 3. Blend the canvas with the video
+                        
+                        # Get position coordinates
+                        overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
+                        
+                        # Create transparent canvas and overlay positioned content
+                        filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}[canvas{idx}]")
+                        filters.append(f"[canvas{idx}]{current_overlay}{overlay_pos}[positioned{idx}]")
+                        
+                        # Now blend with video
+                        filters.append(f"{current_output}[positioned{idx}]blend=all_mode={blend_mode}[ck{idx}]")
                         current_output = f"[ck{idx}]"
                     else:
                         # Normal overlay (with position)
@@ -1442,9 +1454,14 @@ class FFmpegBuilder:
                     # Apply blend mode if not NORMAL
                     if overlay_config.blend_mode != BlendMode.NORMAL:
                         blend_mode = overlay_config.blend_mode.value
-                        # Pad overlay to match video size for blend filter
-                        xfade_filters.append(f"{current_overlay}scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2[ck{idx}_padded]")
-                        xfade_filters.append(f"{current_output}[ck{idx}_padded]blend=all_mode={blend_mode}[ck{idx}]")
+                        
+                        # For blend mode with positioning:
+                        # Create transparent canvas and position overlay on it, then blend
+                        overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
+                        
+                        xfade_filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}[canvas{idx}]")
+                        xfade_filters.append(f"[canvas{idx}]{current_overlay}{overlay_pos}[positioned{idx}]")
+                        xfade_filters.append(f"{current_output}[positioned{idx}]blend=all_mode={blend_mode}[ck{idx}]")
                         current_output = f"[ck{idx}]"
                     else:
                         # Normal overlay (with position)
