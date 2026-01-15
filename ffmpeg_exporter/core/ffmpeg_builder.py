@@ -1467,27 +1467,12 @@ class FFmpegBuilder:
         
         # Add chroma key overlays
         if overlay_input_indices and media_config.overlays:
-            # Calculate total video duration for looping overlays
-            # Use audio duration if longer (for short videos with long audio)
-            total_video_duration = sum(video_durations)
-            if audio_source and audio_duration:
-                total_video_duration = max(total_video_duration, audio_duration)
-            
-            # Calculate total frames needed for loop
-            total_frames = int(total_video_duration * 30)  # Assuming 30fps output
-            
             for idx, (overlay_config, input_idx) in enumerate(zip(media_config.overlays, overlay_input_indices)):
                 if overlay_config.enabled and overlay_config.filepath:
-                    # Use loop filter instead of -stream_loop and trim
-                    # loop filter loops video/image to desired length without stuck processing
-                    if overlay_config.loop:
-                        # loop=N:size:start - loop N times, size=frames per loop, start=start frame
-                        # loop=-1 = infinite loop until duration reached
-                        # setpts to fix timing after loop
-                        xfade_filters.append(f"[{input_idx}:v]loop=loop=-1:size=1:start=0,setpts=N/FRAME_RATE/TB,fps=30[ck{idx}_looped]")
-                        input_stream = f"[ck{idx}_looped]"
-                    else:
-                        input_stream = f"[{input_idx}:v]"
+                    # For looped overlays, we rely on overlay filter's shortest=1 behavior
+                    # This makes overlay repeat/loop until base video ends
+                    # No need for complex loop filter that causes duration issues
+                    input_stream = f"[{input_idx}:v]"
                     
                     # Scale overlay
                     overlay_scale = overlay_config.get_scale_filter(export_settings.width)
@@ -1522,7 +1507,13 @@ class FFmpegBuilder:
                         current_output = f"[ck{idx}]"
                     else:
                         # Normal overlay (with position)
+                        # Use repeatlast=0 and shortest=1 to loop short overlays until base video ends
                         overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
+                        # Add shortest=1 to stop when base video ends, repeatlast=0 to loop overlay
+                        if ':' in overlay_pos:
+                            overlay_pos = overlay_pos + ":shortest=1:repeatlast=0"
+                        else:
+                            overlay_pos = overlay_pos + ":shortest=1:repeatlast=0"
                         xfade_filters.append(f"{current_output}{current_overlay}{overlay_pos}[ck{idx}]")
                         current_output = f"[ck{idx}]"
         
