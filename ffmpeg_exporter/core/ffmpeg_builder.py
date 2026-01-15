@@ -1566,7 +1566,7 @@ class FFmpegBuilder:
         cmd.extend(['-map', audio_map_to_use])
         
         # Encoding settings
-        self._add_encoding_params(cmd, export_settings)
+        cmd.extend(self._get_encoding_options(export_settings))
         
         # Output
         cmd.append(export_settings.output_path)
