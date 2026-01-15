@@ -277,11 +277,9 @@ class FFmpegBuilder:
         if media_config.overlays:
             for overlay_config in media_config.overlays:
                 if overlay_config.enabled and overlay_config.filepath:
-                    # Add loop parameter only if loop is enabled
-                    if overlay_config.loop:
-                        cmd.extend(['-stream_loop', '-1', '-i', overlay_config.filepath])
-                    else:
-                        cmd.extend(['-i', overlay_config.filepath])
+                    # IMPORTANT: Do NOT use -stream_loop -1 as it causes stuck processing
+                    # We'll use loop filter in filter_complex instead
+                    cmd.extend(['-i', overlay_config.filepath])
                     overlay_input_indices.append(next_input_idx)
                     next_input_idx += 1
         
@@ -503,11 +501,9 @@ class FFmpegBuilder:
         if media_config.overlays:
             for overlay_config in media_config.overlays:
                 if overlay_config.enabled and overlay_config.filepath:
-                    # Add loop parameter only if loop is enabled
-                    if overlay_config.loop:
-                        cmd.extend(['-stream_loop', '-1', '-i', overlay_config.filepath])
-                    else:
-                        cmd.extend(['-i', overlay_config.filepath])
+                    # IMPORTANT: Do NOT use -stream_loop -1 as it causes stuck processing
+                    # We'll use loop filter in filter_complex instead
+                    cmd.extend(['-i', overlay_config.filepath])
                     overlay_input_indices.append(next_input_idx)
                     next_input_idx += 1
         
@@ -1394,11 +1390,9 @@ class FFmpegBuilder:
         if media_config.overlays:
             for overlay_config in media_config.overlays:
                 if overlay_config.enabled and overlay_config.filepath:
-                    # Add loop parameter only if loop is enabled
-                    if overlay_config.loop:
-                        cmd.extend(['-stream_loop', '-1', '-i', overlay_config.filepath])
-                    else:
-                        cmd.extend(['-i', overlay_config.filepath])
+                    # IMPORTANT: Do NOT use -stream_loop -1 as it causes stuck processing
+                    # We'll use loop filter in filter_complex instead
+                    cmd.extend(['-i', overlay_config.filepath])
                     overlay_input_indices.append(next_input_idx)
                     next_input_idx += 1
         
@@ -1473,18 +1467,25 @@ class FFmpegBuilder:
         
         # Add chroma key overlays
         if overlay_input_indices and media_config.overlays:
-            # Calculate total video duration for trimming looped overlays
-            # But use audio duration if longer (for short videos with long audio)
+            # Calculate total video duration for looping overlays
+            # Use audio duration if longer (for short videos with long audio)
             total_video_duration = sum(video_durations)
             if audio_source and audio_duration:
                 total_video_duration = max(total_video_duration, audio_duration)
             
+            # Calculate total frames needed for loop
+            total_frames = int(total_video_duration * 30)  # Assuming 30fps output
+            
             for idx, (overlay_config, input_idx) in enumerate(zip(media_config.overlays, overlay_input_indices)):
                 if overlay_config.enabled and overlay_config.filepath:
-                    # IMPORTANT: If overlay is looped, add trim filter first
+                    # Use loop filter instead of -stream_loop and trim
+                    # loop filter loops video/image to desired length without stuck processing
                     if overlay_config.loop:
-                        xfade_filters.append(f"[{input_idx}:v]trim=duration={total_video_duration}:start=0,setpts=PTS-STARTPTS[ck{idx}_trimmed]")
-                        input_stream = f"[ck{idx}_trimmed]"
+                        # loop=N:size:start - loop N times, size=frames per loop, start=start frame
+                        # loop=-1 = infinite loop until duration reached
+                        # setpts to fix timing after loop
+                        xfade_filters.append(f"[{input_idx}:v]loop=loop=-1:size=1:start=0,setpts=N/FRAME_RATE/TB,fps=30[ck{idx}_looped]")
+                        input_stream = f"[ck{idx}_looped]"
                     else:
                         input_stream = f"[{input_idx}:v]"
                     
