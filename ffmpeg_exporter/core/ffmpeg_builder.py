@@ -1474,7 +1474,10 @@ class FFmpegBuilder:
         # Add chroma key overlays
         if overlay_input_indices and media_config.overlays:
             # Calculate total video duration for trimming looped overlays
+            # But use audio duration if longer (for short videos with long audio)
             total_video_duration = sum(video_durations)
+            if audio_source and audio_duration:
+                total_video_duration = max(total_video_duration, audio_duration)
             
             for idx, (overlay_config, input_idx) in enumerate(zip(media_config.overlays, overlay_input_indices)):
                 if overlay_config.enabled and overlay_config.filepath:
