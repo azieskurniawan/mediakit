@@ -542,15 +542,15 @@ class OverlayConfig:
         
         # Top row
         if self.position == OverlayPosition.TOP_LEFT:
-            return (self.x_offset, self.y_offset)
+            return (str(self.x_offset), str(self.y_offset))
         elif self.position == OverlayPosition.TOP_CENTER:
-            return ("(W-w)/2", self.y_offset)
+            return ("(W-w)/2", str(self.y_offset))
         elif self.position == OverlayPosition.TOP_RIGHT:
-            return (f"W-w-{self.x_offset}", self.y_offset)
+            return (f"W-w-{self.x_offset}", str(self.y_offset))
         
         # Middle row
         elif self.position == OverlayPosition.CENTER_LEFT:
-            return (self.x_offset, "(H-h)/2")
+            return (str(self.x_offset), "(H-h)/2")
         elif self.position == OverlayPosition.CENTER:
             return ("(W-w)/2", "(H-h)/2")
         elif self.position == OverlayPosition.CENTER_RIGHT:
@@ -558,7 +558,7 @@ class OverlayConfig:
         
         # Bottom row
         elif self.position == OverlayPosition.BOTTOM_LEFT:
-            return (self.x_offset, f"H-h-{self.y_offset}")
+            return (str(self.x_offset), f"H-h-{self.y_offset}")
         elif self.position == OverlayPosition.BOTTOM_CENTER:
             return ("(W-w)/2", f"H-h-{self.y_offset}")
         elif self.position == OverlayPosition.BOTTOM_RIGHT:
@@ -566,7 +566,7 @@ class OverlayConfig:
         
         # Custom
         else:  # CUSTOM
-            return (self.x_offset, self.y_offset)
+            return (str(self.x_offset), str(self.y_offset))
 
 
 # Legacy alias for backward compatibility
