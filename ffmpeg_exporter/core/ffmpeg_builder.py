@@ -691,9 +691,18 @@ class FFmpegBuilder:
         if chroma_key_input_indices and media_config.overlays:
             for idx, (overlay_config, input_idx) in enumerate(zip(media_config.overlays, chroma_key_input_indices)):
                 if overlay_config.enabled and overlay_config.filepath:
+                    # IMPORTANT: If overlay is looped, add trim filter first to prevent infinite processing
+                    # This limits the overlay duration to match video duration
+                    if overlay_config.loop:
+                        # Trim to video duration to prevent stuck processing
+                        filters.append(f"[{input_idx}:v]trim=duration={video_duration}:start=0,setpts=PTS-STARTPTS[ck{idx}_trimmed]")
+                        input_stream = f"[ck{idx}_trimmed]"
+                    else:
+                        input_stream = f"[{input_idx}:v]"
+                    
                     # Scale overlay
                     overlay_scale = overlay_config.get_scale_filter(export_settings.width)
-                    filters.append(f"[{input_idx}:v]{overlay_scale}[ck{idx}_scaled]")
+                    filters.append(f"{input_stream}{overlay_scale}[ck{idx}_scaled]")
                     
                     current_overlay = f"[ck{idx}_scaled]"
                     
@@ -723,7 +732,7 @@ class FFmpegBuilder:
                         overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
                         
                         # Create transparent canvas and overlay positioned content
-                        filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}[canvas{idx}]")
+                        filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}:d={video_duration}[canvas{idx}]")
                         filters.append(f"[canvas{idx}]{current_overlay}{overlay_pos}[positioned{idx}]")
                         
                         # Now blend with video
@@ -1330,6 +1339,40 @@ class FFmpegBuilder:
                     spectrum_input_idx = next_input_idx
                     next_input_idx += 1
         
+        # NEW: Generate Astrofox visualizer video if enabled
+        visualizer_input_idx = None
+        if media_config.visualizer.type != VisualizerType.NONE:
+            from core.visualizer_preview import VisualizerPreviewGenerator
+            import tempfile
+            
+            # Generate visualizer video for full duration
+            target_duration = sum(video_durations)
+            temp_viz_video = tempfile.NamedTemporaryFile(
+                suffix='.mp4',
+                delete=False,
+                dir=tempfile.gettempdir()
+            )
+            temp_viz_video.close()
+            
+            viz_gen = VisualizerPreviewGenerator()
+            success = viz_gen.generate_full_video(
+                audio_path=audio_source if audio_source else videos[0],
+                output_path=temp_viz_video.name,
+                config=media_config.visualizer,
+                duration=target_duration,
+                width=export_settings.width,
+                height=export_settings.height
+            )
+            
+            if success:
+                # Add visualizer video as input with loop
+                cmd.extend(['-stream_loop', '-1', '-i', temp_viz_video.name])
+                visualizer_input_idx = next_input_idx
+                next_input_idx += 1
+                print(f"Visualizer video generated successfully")
+            else:
+                print("Failed to generate visualizer video")
+        
         # Add logo input if enabled
         logo_input_idx = None
         if media_config.logo_overlay.enabled and media_config.logo_overlay.filepath:
@@ -1430,11 +1473,21 @@ class FFmpegBuilder:
         
         # Add chroma key overlays
         if overlay_input_indices and media_config.overlays:
+            # Calculate total video duration for trimming looped overlays
+            total_video_duration = sum(video_durations)
+            
             for idx, (overlay_config, input_idx) in enumerate(zip(media_config.overlays, overlay_input_indices)):
                 if overlay_config.enabled and overlay_config.filepath:
+                    # IMPORTANT: If overlay is looped, add trim filter first
+                    if overlay_config.loop:
+                        xfade_filters.append(f"[{input_idx}:v]trim=duration={total_video_duration}:start=0,setpts=PTS-STARTPTS[ck{idx}_trimmed]")
+                        input_stream = f"[ck{idx}_trimmed]"
+                    else:
+                        input_stream = f"[{input_idx}:v]"
+                    
                     # Scale overlay
                     overlay_scale = overlay_config.get_scale_filter(export_settings.width)
-                    xfade_filters.append(f"[{input_idx}:v]{overlay_scale}[ck{idx}_scaled]")
+                    xfade_filters.append(f"{input_stream}{overlay_scale}[ck{idx}_scaled]")
                     
                     current_overlay = f"[ck{idx}_scaled]"
                     
@@ -1459,7 +1512,7 @@ class FFmpegBuilder:
                         # Create transparent canvas and position overlay on it, then blend
                         overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
                         
-                        xfade_filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}[canvas{idx}]")
+                        xfade_filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}:d={total_video_duration}[canvas{idx}]")
                         xfade_filters.append(f"[canvas{idx}]{current_overlay}{overlay_pos}[positioned{idx}]")
                         xfade_filters.append(f"{current_output}[positioned{idx}]blend=all_mode={blend_mode}[ck{idx}]")
                         current_output = f"[ck{idx}]"
