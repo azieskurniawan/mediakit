@@ -1280,28 +1280,51 @@ class FFmpegBuilder:
         audio_source, audio_duration = self._get_audio_source(media_config)
         
         # Get video files (no looping for xfade, just use videos as-is)
-        videos = self._media_manager.get_ordered_video_list(
+        original_videos = self._media_manager.get_ordered_video_list(
             media_config.video_files,
             media_config.cover_video if media_config.cover_video else None
         )
         
-        if not videos:
+        if not original_videos:
             raise ValueError("No video files selected")
         
-        if len(videos) < 2:
+        if len(original_videos) < 2:
             # If only 1 video, fallback to traditional concat
             return self._build_video_traditional_concat(media_config, export_settings)
         
         # Get video durations
-        video_durations = []
-        for video in videos:
+        original_video_durations = []
+        for video in original_videos:
             duration = self._audio_utils.get_duration(video) or 5.0
-            video_durations.append(duration)
+            original_video_durations.append(duration)
+        
+        # Calculate how many times we need to repeat videos to match audio duration
+        # This is crucial for looping to work properly with overlays
+        transition_duration = media_config.transition_duration
+        single_cycle_duration = sum(original_video_durations) - (transition_duration * (len(original_videos) - 1))
+        
+        if audio_duration and single_cycle_duration > 0:
+            # Calculate how many times to repeat the video sequence
+            num_repeats = int(audio_duration / single_cycle_duration) + 2  # Add 2 for safety margin
+            print(f"[XFADE LOOP] Audio: {audio_duration}s, Single cycle: {single_cycle_duration}s, Repeating videos {num_repeats}x")
+            
+            # Repeat video list to match audio duration
+            videos = []
+            video_durations = []
+            for _ in range(num_repeats):
+                videos.extend(original_videos)
+                video_durations.extend(original_video_durations)
+        else:
+            # No audio or can't calculate, use original
+            videos = original_videos
+            video_durations = original_video_durations
+        
+        print(f"[XFADE LOOP] Total videos for xfade: {len(videos)}, Total duration: {sum(video_durations)}s")
         
         # Build command
         cmd = [self._ffmpeg_path, '-y']
         
-        # Add all video inputs
+        # Add all video inputs (including repeated ones)
         for video in videos:
             cmd.extend(['-i', video])
         
