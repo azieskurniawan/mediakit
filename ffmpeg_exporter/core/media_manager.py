@@ -30,12 +30,23 @@ class AudioSource(Enum):
 
 
 class OverlayPosition(Enum):
-    """Overlay position presets."""
+    """Overlay position presets (3x3 grid)."""
+    # Top row
     TOP_LEFT = "top_left"
+    TOP_CENTER = "top_center"
     TOP_RIGHT = "top_right"
-    BOTTOM_LEFT = "bottom_left"
-    BOTTOM_RIGHT = "bottom_right"
+    
+    # Middle row
+    CENTER_LEFT = "center_left"
     CENTER = "center"
+    CENTER_RIGHT = "center_right"
+    
+    # Bottom row
+    BOTTOM_LEFT = "bottom_left"
+    BOTTOM_CENTER = "bottom_center"
+    BOTTOM_RIGHT = "bottom_right"
+    
+    # Custom positioning
     CUSTOM = "custom"
 
 
@@ -525,20 +536,35 @@ class OverlayConfig:
         return overlay_str
     
     def _get_position_coords(self, video_width: int, video_height: int) -> tuple:
-        """Calculate position coordinates based on preset."""
+        """Calculate position coordinates based on preset (3x3 grid)."""
         overlay_width = int(video_width * self.size_percent / 100)
         overlay_height = overlay_width  # Approximate
         
+        # Top row
         if self.position == OverlayPosition.TOP_LEFT:
             return (self.x_offset, self.y_offset)
+        elif self.position == OverlayPosition.TOP_CENTER:
+            return ("(W-w)/2", self.y_offset)
         elif self.position == OverlayPosition.TOP_RIGHT:
             return (f"W-w-{self.x_offset}", self.y_offset)
-        elif self.position == OverlayPosition.BOTTOM_LEFT:
-            return (self.x_offset, f"H-h-{self.y_offset}")
-        elif self.position == OverlayPosition.BOTTOM_RIGHT:
-            return (f"W-w-{self.x_offset}", f"H-h-{self.y_offset}")
+        
+        # Middle row
+        elif self.position == OverlayPosition.CENTER_LEFT:
+            return (self.x_offset, "(H-h)/2")
         elif self.position == OverlayPosition.CENTER:
             return ("(W-w)/2", "(H-h)/2")
+        elif self.position == OverlayPosition.CENTER_RIGHT:
+            return (f"W-w-{self.x_offset}", "(H-h)/2")
+        
+        # Bottom row
+        elif self.position == OverlayPosition.BOTTOM_LEFT:
+            return (self.x_offset, f"H-h-{self.y_offset}")
+        elif self.position == OverlayPosition.BOTTOM_CENTER:
+            return ("(W-w)/2", f"H-h-{self.y_offset}")
+        elif self.position == OverlayPosition.BOTTOM_RIGHT:
+            return (f"W-w-{self.x_offset}", f"H-h-{self.y_offset}")
+        
+        # Custom
         else:  # CUSTOM
             return (self.x_offset, self.y_offset)
 

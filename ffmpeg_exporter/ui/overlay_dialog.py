@@ -300,13 +300,21 @@ class OverlayDialog(QDialog):
         size_layout.addWidget(self.size_label)
         pos_layout.addRow("Size:", size_layout)
         
-        # Position preset
+        # Position preset (3x3 grid)
         self.position_combo = QComboBox()
+        # Top row
         self.position_combo.addItem("↖ Top Left", OverlayPosition.TOP_LEFT)
+        self.position_combo.addItem("⬆ Top Center", OverlayPosition.TOP_CENTER)
         self.position_combo.addItem("↗ Top Right", OverlayPosition.TOP_RIGHT)
-        self.position_combo.addItem("↙ Bottom Left", OverlayPosition.BOTTOM_LEFT)
-        self.position_combo.addItem("↘ Bottom Right", OverlayPosition.BOTTOM_RIGHT)
+        # Middle row
+        self.position_combo.addItem("⬅ Center Left", OverlayPosition.CENTER_LEFT)
         self.position_combo.addItem("⊙ Center", OverlayPosition.CENTER)
+        self.position_combo.addItem("➡ Center Right", OverlayPosition.CENTER_RIGHT)
+        # Bottom row
+        self.position_combo.addItem("↙ Bottom Left", OverlayPosition.BOTTOM_LEFT)
+        self.position_combo.addItem("⬇ Bottom Center", OverlayPosition.BOTTOM_CENTER)
+        self.position_combo.addItem("↘ Bottom Right", OverlayPosition.BOTTOM_RIGHT)
+        # Custom
         self.position_combo.addItem("✎ Custom", OverlayPosition.CUSTOM)
         self.position_combo.currentIndexChanged.connect(self._update_preview)
         pos_layout.addRow("Position:", self.position_combo)
