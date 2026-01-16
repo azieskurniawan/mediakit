@@ -277,8 +277,10 @@ class FFmpegBuilder:
         if media_config.overlays:
             for overlay_config in media_config.overlays:
                 if overlay_config.enabled and overlay_config.filepath:
-                    # IMPORTANT: Do NOT use -stream_loop -1 as it causes stuck processing
-                    # We'll use loop filter in filter_complex instead
+                    # Apply input looping if configured
+                    if overlay_config.loop:
+                        cmd.extend(['-stream_loop', '-1'])
+                        
                     cmd.extend(['-i', overlay_config.filepath])
                     overlay_input_indices.append(next_input_idx)
                     next_input_idx += 1
@@ -305,7 +307,8 @@ class FFmpegBuilder:
             audio_stream_ref=audio_stream_ref,
             spectrum_input_idx=spectrum_input_idx,
             visualizer_input_idx=visualizer_input_idx,
-            chroma_key_input_indices=overlay_input_indices if overlay_input_indices else None
+            chroma_key_input_indices=overlay_input_indices if overlay_input_indices else None,
+            target_duration=target_duration
         )
         
         # Build SFX filter if enabled
@@ -398,7 +401,8 @@ class FFmpegBuilder:
             raise ValueError("No video files selected")
         
         # Create concat file for videos
-        concat_file = self._create_concat_file(videos, target_duration, loop=True)
+        has_cover = bool(media_config.cover_video)
+        concat_file = self._create_concat_file(videos, target_duration, loop=True, has_cover=has_cover)
         
         cmd = [self._ffmpeg_path, '-y']
         
@@ -501,8 +505,10 @@ class FFmpegBuilder:
         if media_config.overlays:
             for overlay_config in media_config.overlays:
                 if overlay_config.enabled and overlay_config.filepath:
-                    # IMPORTANT: Do NOT use -stream_loop -1 as it causes stuck processing
-                    # We'll use loop filter in filter_complex instead
+                    # Apply input looping if configured
+                    if overlay_config.loop:
+                        cmd.extend(['-stream_loop', '-1'])
+                        
                     cmd.extend(['-i', overlay_config.filepath])
                     overlay_input_indices.append(next_input_idx)
                     next_input_idx += 1
@@ -534,7 +540,8 @@ class FFmpegBuilder:
             audio_stream_ref=audio_stream_ref,
             spectrum_input_idx=spectrum_input_idx,
             visualizer_input_idx=visualizer_input_idx,
-            chroma_key_input_indices=overlay_input_indices if overlay_input_indices else None
+            chroma_key_input_indices=overlay_input_indices if overlay_input_indices else None,
+            target_duration=target_duration
         )
         
         # Build SFX filter if enabled (needs to work with audio filter)
@@ -589,7 +596,8 @@ class FFmpegBuilder:
         audio_stream_ref: str = "0:a",
         spectrum_input_idx: Optional[int] = None,
         visualizer_input_idx: Optional[int] = None,
-        chroma_key_input_indices: Optional[List[int]] = None
+        chroma_key_input_indices: Optional[List[int]] = None,
+        target_duration: float = 0.0
     ) -> str:
         """Build filter_complex string."""
         filters = []
@@ -687,14 +695,13 @@ class FFmpegBuilder:
         if chroma_key_input_indices and media_config.overlays:
             for idx, (overlay_config, input_idx) in enumerate(zip(media_config.overlays, chroma_key_input_indices)):
                 if overlay_config.enabled and overlay_config.filepath:
-                    # IMPORTANT: If overlay is looped, add trim filter first to prevent infinite processing
-                    # This limits the overlay duration to match video duration
-                    if overlay_config.loop:
-                        # Trim to video duration to prevent stuck processing
-                        filters.append(f"[{input_idx}:v]trim=duration={video_duration}:start=0,setpts=PTS-STARTPTS[ck{idx}_trimmed]")
+                    input_stream = f"[{input_idx}:v]"
+                    
+                    # Always apply trim to target duration if it's set
+                    # This ensures overlay respects the project duration (cuts if too long)
+                    if target_duration > 0:
+                        filters.append(f"{input_stream}trim=duration={target_duration}:start=0,setpts=PTS-STARTPTS[ck{idx}_trimmed]")
                         input_stream = f"[ck{idx}_trimmed]"
-                    else:
-                        input_stream = f"[{input_idx}:v]"
                     
                     # Scale overlay
                     overlay_scale = overlay_config.get_scale_filter(export_settings.width)
@@ -728,7 +735,7 @@ class FFmpegBuilder:
                         overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
                         
                         # Create transparent canvas and overlay positioned content
-                        filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}:d={video_duration}[canvas{idx}]")
+                        filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}:d={target_duration}[canvas{idx}]")
                         filters.append(f"[canvas{idx}]{current_overlay}{overlay_pos}[positioned{idx}]")
                         
                         # Now blend with video
@@ -1305,8 +1312,16 @@ class FFmpegBuilder:
         
         if audio_duration and single_cycle_duration > 0:
             # Calculate how many times to repeat the video sequence
-            num_repeats = int(audio_duration / single_cycle_duration) + 2  # Add 2 for safety margin
-            print(f"[XFADE LOOP] Audio: {audio_duration}s, Single cycle: {single_cycle_duration}s, Repeating videos {num_repeats}x")
+            # When repeating, we lose one transition_duration at the junction
+            effective_cycle_duration = single_cycle_duration - transition_duration
+            
+            if effective_cycle_duration > 0:
+                num_repeats = int(audio_duration / effective_cycle_duration) + 2
+            else:
+                # Fallback if transition consumes almost all duration
+                num_repeats = int(audio_duration / single_cycle_duration) + 4
+                
+            print(f"[XFADE LOOP] Audio: {audio_duration}s, Single cycle: {single_cycle_duration}s, Effective add: {effective_cycle_duration}s, Repeating {num_repeats}x")
             
             # Repeat video list to match audio duration
             videos = []
@@ -1321,6 +1336,108 @@ class FFmpegBuilder:
         
         print(f"[XFADE LOOP] Total videos for xfade: {len(videos)}, Total duration: {sum(video_durations)}s")
         
+        # Calculate total video duration (accounting for xfades)
+        if videos:
+            total_video_duration = sum(video_durations) - (transition_duration * (len(videos) - 1))
+        else:
+            total_video_duration = 0.0
+            
+        print(f"[XFADE LOOP] Calculated output duration: {total_video_duration}s")
+        
+        # NEW: Handle Large Number of Videos by Rendering Intermediate Chunks
+        # Limit inputs to prevent OOM errors (typically happens around 30-50 inputs)
+        MAX_INPUTS_PER_PASS = 20
+        
+        if len(videos) > MAX_INPUTS_PER_PASS:
+            print(f"\n[XFADE] ⚠️ Too many videos ({len(videos)}) for single pass. Switching to incremental rendering...")
+            
+            # Create a simplified export settings for intermediate renders (maintain quality)
+            intermediate_settings = ExportSettings(
+                width=export_settings.width,
+                height=export_settings.height,
+                fps=export_settings.fps,
+                # Use high bitrate/quality for intermediate
+                rate_control=RateControl.CRF,
+                crf_value=18,
+                video_codec=VideoCodec.H264,
+                encoding_method=export_settings.encoding_method
+            )
+            
+            # Process in chunks
+            # Start with the first batch
+            current_processed_video = None
+            
+            # We process first batch (0..N-1), render to temp
+            # Then process [temp, N..N+M-1], render to temp
+            # ...
+            
+            # Calculate batch size (N)
+            # We reserve 1 input for the previous chunk (except for first batch)
+            batch_size = MAX_INPUTS_PER_PASS
+            
+            # Initial batch
+            chunk_videos = videos[:batch_size]
+            remaining_videos = videos[batch_size:]
+            chunk_durations = video_durations[:batch_size]
+            remaining_durations = video_durations[batch_size:]
+            
+            batch_idx = 0
+            
+            while True:
+                batch_idx += 1
+                print(f"[XFADE] Rendering chunk {batch_idx}: {len(chunk_videos)} videos...")
+                
+                # Keep track of previous chunk for cleanup
+                prev_processed_video = current_processed_video
+                
+                # Render this chunk
+                temp_chunk = self._render_xfade_chunk(
+                    chunk_videos, 
+                    chunk_durations, 
+                    media_config, 
+                    intermediate_settings
+                )
+                
+                current_processed_video = temp_chunk
+                
+                # Cleanup previous chunk if it was a temp file
+                if prev_processed_video and prev_processed_video in self._temp_files:
+                    try:
+                        if os.path.exists(prev_processed_video):
+                            os.remove(prev_processed_video)
+                            print(f"[XFADE] Cleaned up intermediate chunk: {prev_processed_video}")
+                            # We remove it from _temp_files so cleanup_temp_files() doesn't try to delete it again
+                            self._temp_files.remove(prev_processed_video)
+                    except Exception as e:
+                        print(f"[XFADE] Warning: Failed to cleanup chunk: {e}")
+                
+                if not remaining_videos:
+                    break
+                    
+                # Setup next batch
+                # Next batch inputs: [current_processed_video] + next set of videos
+                # But we can only take (MAX_INPUTS - 1) new videos
+                next_batch_size = MAX_INPUTS_PER_PASS - 1
+                
+                next_videos = remaining_videos[:next_batch_size]
+                next_durations = remaining_durations[:next_batch_size]
+                
+                # Update remaining
+                remaining_videos = remaining_videos[next_batch_size:]
+                remaining_durations = remaining_durations[next_batch_size:]
+                
+                # Construct input list for next iteration
+                chunk_videos = [current_processed_video] + next_videos
+                
+                # Need duration of processed chunk
+                chunk_dur = self._audio_utils.get_duration(current_processed_video)
+                chunk_durations = [chunk_dur] + next_durations
+            
+            # Now we have a single video file containing the entire xfaded sequence
+            videos = [current_processed_video]
+            video_durations = [self._audio_utils.get_duration(current_processed_video)]
+            print(f"[XFADE] ✅ Incremental rendering complete. Final video: {current_processed_video}")
+            
         # Build command
         cmd = [self._ffmpeg_path, '-y']
         
@@ -1347,11 +1464,10 @@ class FFmpegBuilder:
         if media_config.audio_visualizer.enabled and media_config.audio_visualizer.style == VisualizerStyle.CUSTOM_BARS:
             spectrum_audio_source = audio_source if audio_source else (videos[0] if videos else None)
             if spectrum_audio_source:
-                target_duration = sum(video_durations)
                 spectrum_video = self._generate_custom_spectrum(
                     spectrum_audio_source,
                     media_config,
-                    target_duration
+                    total_video_duration
                 )
                 if spectrum_video:
                     cmd.extend(['-stream_loop', '-1', '-i', spectrum_video])
@@ -1365,7 +1481,6 @@ class FFmpegBuilder:
             import tempfile
             
             # Generate visualizer video for full duration
-            target_duration = sum(video_durations)
             temp_viz_video = tempfile.NamedTemporaryFile(
                 suffix='.mp4',
                 delete=False,
@@ -1378,7 +1493,7 @@ class FFmpegBuilder:
                 audio_path=audio_source if audio_source else videos[0],
                 output_path=temp_viz_video.name,
                 config=media_config.visualizer,
-                duration=target_duration,
+                duration=total_video_duration,
                 width=export_settings.width,
                 height=export_settings.height
             )
@@ -1413,8 +1528,10 @@ class FFmpegBuilder:
         if media_config.overlays:
             for overlay_config in media_config.overlays:
                 if overlay_config.enabled and overlay_config.filepath:
-                    # IMPORTANT: Do NOT use -stream_loop -1 as it causes stuck processing
-                    # We'll use loop filter in filter_complex instead
+                    # Apply input looping if configured
+                    if overlay_config.loop:
+                        cmd.extend(['-stream_loop', '-1'])
+                        
                     cmd.extend(['-i', overlay_config.filepath])
                     overlay_input_indices.append(next_input_idx)
                     next_input_idx += 1
@@ -1425,23 +1542,38 @@ class FFmpegBuilder:
         
         xfade_filters = []
         current_output = "[0:v]"
-        cumulative_offset = 0.0
+        # Track duration of the current video stream as we build it
+        # Starts with the first video's duration
+        current_stream_duration = video_durations[0]
+        print(f"[XFADE] Building chain with {len(videos)} videos. V0 duration: {current_stream_duration:.2f}s")
         
         for i in range(len(videos) - 1):
-            # Calculate offset (when to start transition)
-            offset = cumulative_offset + video_durations[i] - transition_duration
+            # Combining current stream with videos[i+1]
+            next_idx = i + 1
+            next_dur = video_durations[next_idx]
+            
+            # Calculate offset: Transition starts transition_duration BEFORE the end of current stream
+            offset = current_stream_duration - transition_duration
+            
+            # Safety check: Ensure offset is positive (first video must be longer than transition)
+            if offset < 0:
+                print(f"[XFADE WARNING] Video {i} is shorter than transition! Duration: {current_stream_duration}, Transition: {transition_duration}")
+                offset = 0
             
             # Next input
-            next_input = f"[{i+1}:v]"
+            next_input = f"[{next_idx}:v]"
             output_label = f"[v{i}]" if i < len(videos) - 2 else "[vxfade]"
             
             # Build xfade filter
-            xfade_filter = f"{current_output}{next_input}xfade=transition={transition_type}:duration={transition_duration}:offset={offset}{output_label}"
+            xfade_filter = f"{current_output}{next_input}xfade=transition={transition_type}:duration={transition_duration}:offset={offset:.3f}{output_label}"
             xfade_filters.append(xfade_filter)
             
-            # Update for next iteration
+            # Update current stream duration
+            # New duration = Old duration + Next duration - Transition duration
+            current_stream_duration = current_stream_duration + next_dur - transition_duration
+            
+            # Update output label for next iteration
             current_output = output_label
-            cumulative_offset = offset + transition_duration
         
         # Apply video scale/zoom if enabled
         if media_config.video_scale_enabled and media_config.video_scale_percent > 100:
@@ -1492,14 +1624,23 @@ class FFmpegBuilder:
         if overlay_input_indices and media_config.overlays:
             for idx, (overlay_config, input_idx) in enumerate(zip(media_config.overlays, overlay_input_indices)):
                 if overlay_config.enabled and overlay_config.filepath:
-                    # For looped overlays, we rely on overlay filter's shortest=1 behavior
-                    # This makes overlay repeat/loop until base video ends
-                    # No need for complex loop filter that causes duration issues
+                    # Input stream
                     input_stream = f"[{input_idx}:v]"
+                    
+                    # Apply trim to target duration to ensure it matches audio duration exactly
+                    # This handles:
+                    # 1. Trimming if overlay > target (e.g. 15m overlay on 10m audio)
+                    # 2. Preventing infinite loop if -stream_loop is used
+                    # 3. Looping is handled by -stream_loop on input side (if enabled)
+                    if total_video_duration > 0:
+                        xfade_filters.append(f"{input_stream}trim=duration={total_video_duration}:start=0,setpts=PTS-STARTPTS[ck{idx}_trimmed]")
+                        current_overlay = f"[ck{idx}_trimmed]"
+                    else:
+                        current_overlay = input_stream
                     
                     # Scale overlay
                     overlay_scale = overlay_config.get_scale_filter(export_settings.width)
-                    xfade_filters.append(f"{input_stream}{overlay_scale}[ck{idx}_scaled]")
+                    xfade_filters.append(f"{current_overlay}{overlay_scale}[ck{idx}_scaled]")
                     
                     current_overlay = f"[ck{idx}_scaled]"
                     
@@ -1530,13 +1671,8 @@ class FFmpegBuilder:
                         current_output = f"[ck{idx}]"
                     else:
                         # Normal overlay (with position)
-                        # Use repeatlast=0 and shortest=1 to loop short overlays until base video ends
                         overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
-                        # Add shortest=1 to stop when base video ends, repeatlast=0 to loop overlay
-                        if ':' in overlay_pos:
-                            overlay_pos = overlay_pos + ":shortest=1:repeatlast=0"
-                        else:
-                            overlay_pos = overlay_pos + ":shortest=1:repeatlast=0"
+                        # shortest=1 removed as it truncates. Trimming handled by input trim above.
                         xfade_filters.append(f"{current_output}{current_overlay}{overlay_pos}[ck{idx}]")
                         current_output = f"[ck{idx}]"
         
@@ -1591,11 +1727,167 @@ class FFmpegBuilder:
         
         return cmd
     
+    def _render_xfade_chunk(
+        self, 
+        videos: List[str], 
+        video_durations: List[float],
+        media_config: MediaConfig,
+        export_settings: ExportSettings
+    ) -> str:
+        """
+        Render a chunk of videos with xfade transitions to a temporary file.
+        Used to prevent OOM when processing many videos.
+        """
+        if not videos:
+            raise ValueError("No videos to render in chunk")
+            
+        # Create temp output file
+        temp_output = tempfile.NamedTemporaryFile(
+            suffix='_chunk.mp4',
+            delete=False,
+            dir=tempfile.gettempdir()
+        )
+        temp_output.close()
+        self._temp_files.append(temp_output.name)
+        
+        # Build command for this chunk (VIDEO ONLY, NO AUDIO)
+        cmd = [self._ffmpeg_path, '-y']
+        
+        for video in videos:
+            cmd.extend(['-i', video])
+            
+        # Build xfade filter chain
+        transition_duration = media_config.transition_duration
+        transition_type = media_config.transition_type
+        
+        xfade_filters = []
+        current_output = "[0:v]"
+        current_stream_duration = video_durations[0]
+        
+        for i in range(len(videos) - 1):
+            next_idx = i + 1
+            next_dur = video_durations[next_idx]
+            
+            offset = current_stream_duration - transition_duration
+            if offset < 0: offset = 0
+            
+            next_input = f"[{next_idx}:v]"
+            output_label = f"[v{i}]" if i < len(videos) - 2 else "[vout]"
+            
+            xfade_filter = f"{current_output}{next_input}xfade=transition={transition_type}:duration={transition_duration}:offset={offset:.3f}{output_label}"
+            xfade_filters.append(xfade_filter)
+            
+            current_output = output_label
+            current_stream_duration = current_stream_duration + next_dur - transition_duration
+            
+        # If no xfades (single video), just copy
+        if not xfade_filters:
+            # Just copy the video if it's the only one
+            if len(videos) == 1:
+                import shutil
+                try:
+                    shutil.copy2(videos[0], temp_output.name)
+                    return temp_output.name
+                except:
+                    # Fallback to re-encode
+                    cmd = [self._ffmpeg_path, '-y', '-i', videos[0], '-c:v', 'copy', '-an', temp_output.name]
+            else:
+                # Should not happen given logic
+                pass
+        else:
+            # Apply filters
+            # Note: We do NOT apply scale/overlay here, only xfade
+            # This keeps it raw/clean for the final pass
+            
+            # Ensure pixel format consistency
+            # Convert to consistent format to avoid errors when mixing formats
+            # xfade requires consistent inputs, but we assume inputs are similar
+            # If not, we might need pre-scaling. 
+            # Ideally, we should add scale filters to inputs if sizes differ.
+            
+            # For now, assume inputs are compatible (or add scale to inputs)
+            # Let's add simple scaling to inputs to ensure they match target resolution
+            # This is safer for intermediate chunks
+            
+            # Rebuild command with pre-scaling
+            cmd = [self._ffmpeg_path, '-y']
+            input_labels = []
+            
+            for idx, video in enumerate(videos):
+                cmd.extend(['-i', video])
+                # Scale each input
+                input_labels.append(f"[{idx}:v]")
+            
+            # Apply scaling to all inputs first? 
+            # Or just assume they work? 
+            # If we scale here, we double-scale in final pass.
+            # But xfade fails if resolutions differ.
+            # Best approach: Scale inputs to target resolution within this filter graph
+            
+            scaled_filters = []
+            
+            # Redefine the loop with scaling
+            current_output = "[v0_scaled]"
+            scaled_filters.append(f"[0:v]scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v0_scaled]")
+            
+            # Track duration
+            current_stream_duration = video_durations[0]
+            
+            for i in range(len(videos) - 1):
+                next_idx = i + 1
+                next_dur = video_durations[next_idx]
+                
+                # Scale next input
+                scaled_filters.append(f"[{next_idx}:v]scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{next_idx}_scaled]")
+                next_input = f"[v{next_idx}_scaled]"
+                
+                offset = current_stream_duration - transition_duration
+                if offset < 0: offset = 0
+                
+                output_label = f"[v{i}_xf]" if i < len(videos) - 2 else "[vout]"
+                
+                xfade_filter = f"{current_output}{next_input}xfade=transition={transition_type}:duration={transition_duration}:offset={offset:.3f}{output_label}"
+                scaled_filters.append(xfade_filter)
+                
+                current_output = output_label
+                current_stream_duration = current_stream_duration + next_dur - transition_duration
+            
+            self._add_filter_complex(cmd, ";".join(scaled_filters))
+            cmd.extend(['-map', '[vout]'])
+            
+            # Encoding settings for intermediate
+            # High quality, no audio
+            cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-an'])
+            cmd.append(temp_output.name)
+            
+        # Execute chunk render
+        try:
+            print(f"   Executing chunk render ({len(videos)} inputs)...")
+            # Don't show window on Windows
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                
+            subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                startupinfo=startupinfo
+            )
+            return temp_output.name
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr.decode() if e.stderr else str(e)
+            print(f"❌ Chunk render failed: {error_msg}")
+            raise ValueError(f"Failed to render video chunk: {error_msg}")
+
     def _create_concat_file(
         self,
         videos: List[str],
         target_duration: float,
-        loop: bool
+        loop: bool,
+        has_cover: bool = False
     ) -> str:
         """Create concat file for video concatenation."""
         # Calculate total video duration
@@ -1616,8 +1908,8 @@ class FFmpegBuilder:
         current_duration = 0.0
         video_index = 0
         
-        # Always add cover video first (index 0) without looping
-        if video_durations:
+        # If there is a cover video, add it first (index 0) without looping
+        if has_cover and video_durations:
             first_video, first_duration = video_durations[0]
             concat_content.append(f"file '{first_video}'")
             current_duration += first_duration
@@ -1627,7 +1919,8 @@ class FFmpegBuilder:
         while current_duration < target_duration and video_durations:
             if video_index >= len(video_durations):
                 if loop:
-                    video_index = 1 if len(video_durations) > 1 else 0
+                    # If has cover, skip index 0 when looping
+                    video_index = 1 if has_cover and len(video_durations) > 1 else 0
                 else:
                     break
             
