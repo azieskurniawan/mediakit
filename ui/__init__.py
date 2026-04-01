@@ -7,5 +7,6 @@ __all__ = [
     'EffectsPanel',
     'PreviewPanel',
     'ExportDialog',
-    'SettingsDialog'
+    'SettingsDialog',
+    'QueuePanel'
 ]

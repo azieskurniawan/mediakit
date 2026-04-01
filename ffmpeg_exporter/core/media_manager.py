@@ -146,8 +146,16 @@ class LogoOverlay:
             return (self.x_offset, f"H-h-{self.y_offset}")
         elif self.position == OverlayPosition.BOTTOM_RIGHT:
             return (f"W-w-{self.x_offset}", f"H-h-{self.y_offset}")
+        elif self.position == OverlayPosition.BOTTOM_CENTER:
+            # Bottom Center with offset support
+            # X: Centered + Offset (positive = right, negative = left)
+            # Y: Bottom - Offset (positive = up)
+            return (f"(W-w)/2+{self.x_offset}", f"H-h-{self.y_offset}")
         elif self.position == OverlayPosition.CENTER:
-            return ("(W-w)/2", "(H-h)/2")
+            # Center with offset support
+            # X: Centered + Offset
+            # Y: Centered + Offset
+            return (f"(W-w)/2+{self.x_offset}", f"(H-h)/2+{self.y_offset}")
         else:  # CUSTOM
             return (self.x_offset, self.y_offset)
 
@@ -214,6 +222,66 @@ class TextOverlay:
             return ("(w-text_w)/2", "(h-text_h)/2")
         else:  # CUSTOM
             return (str(self.x_offset), str(self.y_offset))
+
+
+@dataclass
+class NowPlayingConfig:
+    """Now Playing overlay: shows current song title from audio filename (in order)."""
+    enabled: bool = False
+    font_file: str = ""
+    font_size: int = 36
+    font_color: str = "white"
+    position: OverlayPosition = OverlayPosition.BOTTOM_CENTER
+    x_offset: int = 0
+    y_offset: int = 40
+    # Mulai tampil setelah (detik). Misal cover video 10 detik → set 11 agar now playing dari detik 11.
+    start_offset_seconds: float = 0.0
+    
+    def _get_position_expression(self) -> tuple:
+        """Get FFmpeg position expressions (same logic as TextOverlay)."""
+        if self.position == OverlayPosition.TOP_LEFT:
+            return (str(self.x_offset), str(self.y_offset))
+        elif self.position == OverlayPosition.TOP_RIGHT:
+            return (f"w-text_w-{self.x_offset}", str(self.y_offset))
+        elif self.position == OverlayPosition.BOTTOM_LEFT:
+            return (str(self.x_offset), f"h-text_h-{self.y_offset}")
+        elif self.position == OverlayPosition.BOTTOM_RIGHT:
+            return (f"w-text_w-{self.x_offset}", f"h-text_h-{self.y_offset}")
+        elif self.position == OverlayPosition.BOTTOM_CENTER:
+            return (f"(w-text_w)/2+{self.x_offset}", f"h-text_h-{self.y_offset}")
+        elif self.position == OverlayPosition.CENTER:
+            return (f"(w-text_w)/2+{self.x_offset}", f"(h-text_h)/2+{self.y_offset}")
+        else:  # CUSTOM
+            return (str(self.x_offset), str(self.y_offset))
+    
+    def get_drawtext_filter_timed(
+        self,
+        video_width: int,
+        video_height: int,
+        start_time: float,
+        end_time: float,
+        title_text: str
+    ) -> str:
+        """
+        Generate FFmpeg drawtext filter for a time segment (now playing).
+        Text is shown only when t is between start_time and end_time.
+        """
+        if not self.enabled or not title_text:
+            return ""
+        escaped = title_text.replace("'", "\\'").replace(":", "\\:")
+        x_expr, y_expr = self._get_position_expression()
+        filter_parts = [
+            f"text='{escaped}'",
+            f"fontsize={self.font_size}",
+            f"fontcolor={self.font_color}",
+            f"x={x_expr}",
+            f"y={y_expr}",
+            f"enable='between(t\\,{start_time}\\,{end_time})'"
+        ]
+        if self.font_file and os.path.isfile(self.font_file):
+            escaped_path = self.font_file.replace("\\", "/").replace(":", "\\:")
+            filter_parts.insert(1, f"fontfile='{escaped_path}'")
+        return "drawtext=" + ":".join(filter_parts)
 
 
 @dataclass
@@ -784,6 +852,7 @@ class MediaConfig:
     # Overlays
     logo_overlay: LogoOverlay = field(default_factory=LogoOverlay)
     text_overlay: TextOverlay = field(default_factory=TextOverlay)
+    now_playing_config: NowPlayingConfig = field(default_factory=NowPlayingConfig)
     audio_visualizer: AudioVisualizerConfig = field(default_factory=AudioVisualizerConfig)
     
     # Subtitles/Lyrics

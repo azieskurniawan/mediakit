@@ -122,6 +122,14 @@ class MainWindow(QMainWindow):
         
         layout.addStretch()
         
+        # Queue Panel button (NEW)
+        queue_btn = QPushButton("📋")
+        queue_btn.setObjectName("iconButton")
+        queue_btn.setFixedSize(40, 40)
+        queue_btn.setToolTip("Export Queue")
+        queue_btn.clicked.connect(self._show_queue_panel)
+        layout.addWidget(queue_btn)
+        
         # Job monitor button
         job_monitor_btn = QPushButton("📊")
         job_monitor_btn.setObjectName("iconButton")
@@ -390,6 +398,12 @@ class MainWindow(QMainWindow):
         
         # Connect effects panel preview request
         self._effects_panel.preview_requested.connect(self._generate_spectrum_preview)
+        
+        # Sample audio titles for Now Playing preview (dari urutan audio di Media panel)
+        from pathlib import Path
+        self._effects_panel._get_sample_audio_titles = lambda: [
+            Path(p).stem for p in (getattr(self._media_panel, '_audio_files', []) or [])[:3]
+        ]
     
     def _check_ffmpeg_config(self) -> None:
         """Check if FFmpeg is configured."""
@@ -399,6 +413,18 @@ class MainWindow(QMainWindow):
     def _toggle_preview(self, checked: bool) -> None:
         """Toggle preview panel visibility."""
         self._preview_panel.setVisible(checked)
+    
+    def _show_queue_panel(self) -> None:
+        """Show export queue panel."""
+        from ui.queue_panel import QueuePanel
+        
+        # Create queue panel window if not exists
+        if not hasattr(self, '_queue_panel') or not self._queue_panel:
+            self._queue_panel = QueuePanel(self)
+        
+        self._queue_panel.show()
+        self._queue_panel.raise_()
+        self._queue_panel.activateWindow()
     
     def _show_job_monitor(self) -> None:
         """Show job monitor window."""
@@ -490,6 +516,7 @@ class MainWindow(QMainWindow):
         effects_settings = self._effects_panel.get_settings()
         config.logo_overlay = effects_settings.get('logo_overlay', config.logo_overlay)
         config.text_overlay = effects_settings.get('text_overlay', config.text_overlay)
+        config.now_playing_config = effects_settings.get('now_playing_config', config.now_playing_config)
         config.audio_visualizer = effects_settings.get('audio_visualizer', config.audio_visualizer)
         config.subtitle_config = effects_settings.get('subtitle_config', config.subtitle_config)
         

@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
-from core.media_manager import MediaConfig, MediaMode, MediaManager, LoopMode, AudioSource, VisualizerStyle, BlendMode, VisualizerType
+from core.media_manager import MediaConfig, MediaMode, MediaManager, LoopMode, AudioSource, VisualizerStyle, BlendMode, VisualizerType, NowPlayingConfig
 from core.audio_utils import AudioUtils
 from core.spectrum_renderer import SpectrumRenderer
 from core.audio_analyzer import AudioAnalyzer
@@ -279,7 +279,12 @@ class FFmpegBuilder:
                 if overlay_config.enabled and overlay_config.filepath:
                     # Apply input looping if configured
                     if overlay_config.loop:
+                        # Add -t before -i to limit input duration at input level.
+                        # This prevents FFmpeg from buffering infinite frames when
+                        # stream_loop is combined with concat (cover video switch causes OOM).
                         cmd.extend(['-stream_loop', '-1'])
+                        if target_duration > 0:
+                            cmd.extend(['-t', str(target_duration)])
                         
                     cmd.extend(['-i', overlay_config.filepath])
                     overlay_input_indices.append(next_input_idx)
@@ -407,7 +412,11 @@ class FFmpegBuilder:
         cmd = [self._ffmpeg_path, '-y']
         
         # Input 0: video concat file
-        cmd.extend(['-f', 'concat', '-safe', '0', '-i', concat_file])
+        # -r forces CFR at input level to fix VFR (Variable Frame Rate) videos.
+        # VFR videos (common in screen recordings/downloads) cause timestamp corruption
+        # in concat demuxer, resulting in video freeze after cover video ends.
+        # -start_at_zero normalizes negative starting timestamps (e.g. -0.023s from some encoders)
+        cmd.extend(['-r', str(export_settings.fps), '-f', 'concat', '-safe', '0', '-start_at_zero', '-i', concat_file])
         
         # Track input indices
         next_input_idx = 1
@@ -507,7 +516,12 @@ class FFmpegBuilder:
                 if overlay_config.enabled and overlay_config.filepath:
                     # Apply input looping if configured
                     if overlay_config.loop:
+                        # Add -t before -i to limit input duration at input level.
+                        # This prevents FFmpeg from buffering infinite frames when
+                        # stream_loop is combined with concat (cover video switch causes OOM).
                         cmd.extend(['-stream_loop', '-1'])
+                        if target_duration > 0:
+                            cmd.extend(['-t', str(target_duration)])
                         
                     cmd.extend(['-i', overlay_config.filepath])
                     overlay_input_indices.append(next_input_idx)
@@ -613,7 +627,8 @@ class FFmpegBuilder:
             current_output = "[zoomed]"
         
         # Scale to target resolution
-        scale_filter = f"{current_output}scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2,fps={export_settings.fps}[scaled]"
+        # setpts=PTS-STARTPTS ensures timestamps are clean after concat discontinuities
+        scale_filter = f"{current_output}scale={export_settings.width}:{export_settings.height}:force_original_aspect_ratio=decrease,pad={export_settings.width}:{export_settings.height}:(ow-iw)/2:(oh-ih)/2,fps={export_settings.fps},setpts=PTS-STARTPTS[scaled]"
         filters.append(scale_filter)
         current_output = "[scaled]"
         
@@ -672,6 +687,28 @@ class FFmpegBuilder:
             else:
                 print("Warning: No SRT files found, subtitle disabled")
         
+        # Add Now Playing overlay (judul lagu sesuai urutan audio)
+        if media_config.now_playing_config.enabled and media_config.audio_files:
+            segments = self._get_now_playing_segments(media_config)
+            if segments:
+                np_config = media_config.now_playing_config
+                offset = getattr(np_config, 'start_offset_seconds', 0.0) or 0.0
+                for i, (start_t, end_t, title) in enumerate(segments):
+                    effective_start = max(start_t, offset)
+                    if effective_start >= end_t:
+                        continue  # Segment entirely before offset (e.g. cover video)
+                    dt = np_config.get_drawtext_filter_timed(
+                        export_settings.width,
+                        export_settings.height,
+                        effective_start,
+                        end_t,
+                        title
+                    )
+                    if dt:
+                        out_label = f"[np{i}]"
+                        filters.append(f"{current_output}{dt}{out_label}")
+                        current_output = out_label
+        
         # Add audio visualizer if enabled
         if media_config.audio_visualizer.enabled:
             # Check if custom spectrum video input exists
@@ -699,7 +736,9 @@ class FFmpegBuilder:
                     
                     # Always apply trim to target duration if it's set
                     # This ensures overlay respects the project duration (cuts if too long)
-                    if target_duration > 0:
+                    # Note: For looped overlays, -t is already set at input level to prevent OOM.
+                    # trim here is only a safety net for non-looped overlays that may be too long.
+                    if target_duration > 0 and not overlay_config.loop:
                         filters.append(f"{input_stream}trim=duration={target_duration}:start=0,setpts=PTS-STARTPTS[ck{idx}_trimmed]")
                         input_stream = f"[ck{idx}_trimmed]"
                     
@@ -726,21 +765,35 @@ class FFmpegBuilder:
                     if overlay_config.blend_mode != BlendMode.NORMAL:
                         blend_mode = overlay_config.blend_mode.value
                         
-                        # For blend mode with positioning:
-                        # 1. Create a transparent canvas matching video size
-                        # 2. Overlay the scaled overlay onto canvas at desired position
-                        # 3. Blend the canvas with the video
-                        
                         # Get position coordinates
                         overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
                         
-                        # Create transparent canvas and overlay positioned content
-                        filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}:d={target_duration}[canvas{idx}]")
-                        filters.append(f"[canvas{idx}]{current_overlay}{overlay_pos}[positioned{idx}]")
-                        
-                        # Now blend with video
-                        filters.append(f"{current_output}[positioned{idx}]blend=all_mode={blend_mode}[ck{idx}]")
-                        current_output = f"[ck{idx}]"
+                        # For Screen/Lighten/Dodge/Glow modes with black background:
+                        # SIMPLEST & MOST RELIABLE: Remove black with lumakey, then normal overlay
+                        # This avoids FFmpeg blend filter quirks and gives expected Screen behavior
+                        if blend_mode in ['screen', 'lighten', 'dodge', 'glow']:
+                            # Remove black/dark background using lumakey
+                            # This creates proper alpha channel where black = transparent
+                            filters.append(f"{current_overlay}lumakey=threshold=0.05:tolerance=0.05:softness=0.05[ck{idx}_keyed]")
+                            
+                            # Normal overlay with alpha (no blend filter)
+                            # Black areas are transparent, so they won't affect base video
+                            filters.append(f"{current_output}[ck{idx}_keyed]{overlay_pos}[ck{idx}]")
+                            current_output = f"[ck{idx}]"
+                        else:
+                            # Other blend modes: use standard flow with yuva420p
+                            # Ensure overlay has proper pixel format with alpha (yuva420p)
+                            filters.append(f"{current_overlay}format=yuva420p[ck{idx}_formatted]")
+                            
+                            # Create transparent canvas with proper format
+                            filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}:d={target_duration},format=yuva420p[canvas{idx}]")
+                            
+                            # Overlay positioned content onto canvas (preserves alpha)
+                            filters.append(f"[canvas{idx}][ck{idx}_formatted]{overlay_pos}[positioned{idx}]")
+                            
+                            # Blend canvas with video with proper alpha handling
+                            filters.append(f"{current_output}[positioned{idx}]blend=all_mode={blend_mode}:all_opacity=1[ck{idx}]")
+                            current_output = f"[ck{idx}]"
                     else:
                         # Normal overlay (with position)
                         overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
@@ -786,6 +839,66 @@ class FFmpegBuilder:
             return str(srt_path)
         
         return None
+    
+    def _get_now_playing_segments(self, media_config: MediaConfig) -> List[Tuple[float, float, str]]:
+        """
+        Build list of (start_time, end_time, title) for Now Playing overlay.
+        Title = filename without extension; order matches audio_files.
+        """
+        segments = []
+        t = 0.0
+        for filepath in media_config.audio_files:
+            if filepath.endswith('.txt'):
+                continue  # concat list, skip
+            dur = self._audio_utils.get_duration(filepath)
+            if dur is None or dur <= 0:
+                continue
+            title = Path(filepath).stem
+            segments.append((t, t + dur, title))
+            t += dur
+        return segments
+    
+    def _extract_font_family_name(self, font_path: str) -> Optional[str]:
+        """
+        Extract the actual font family name from a .ttf/.otf file.
+        
+        Args:
+            font_path: Path to font file
+            
+        Returns:
+            Font family name, or None if extraction fails
+        """
+        try:
+            from fontTools.ttLib import TTFont
+            
+            font = TTFont(font_path)
+            
+            # Try to get font family name from 'name' table
+            # Name ID 1 = Font Family, Name ID 4 = Full Font Name
+            name_table = font['name']
+            
+            # Prefer English names (platform=3, encoding=1, language=0x409)
+            for record in name_table.names:
+                # Name ID 1 = Font Family (e.g., "Rocline")
+                if record.nameID == 1:
+                    if record.platformID == 3 and record.langID == 0x409:  # Windows, English
+                        return record.toUnicode()
+            
+            # Fallback: any Font Family name
+            for record in name_table.names:
+                if record.nameID == 1:
+                    return record.toUnicode()
+            
+            # Last fallback: Full Font Name (Name ID 4)
+            for record in name_table.names:
+                if record.nameID == 4:
+                    return record.toUnicode()
+            
+            return None
+            
+        except Exception as e:
+            print(f"Warning: Failed to extract font name from {font_path}: {e}")
+            return None
     
     def _build_subtitle_filter(self, media_config: MediaConfig, srt_files: List[str]) -> str:
         """
@@ -840,9 +953,25 @@ class FFmpegBuilder:
             f"MarginV={sub_config.margin_v}",
         ]
         
+        # Build subtitles filter parameters
+        font_dir = None
+        font_name = None
+        
         if sub_config.font_file and os.path.isfile(sub_config.font_file):
-            font_name = Path(sub_config.font_file).stem
-            force_style_parts.insert(0, f"FontName={font_name}")
+            # Extract REAL font family name from .ttf file using fontTools
+            font_name = self._extract_font_family_name(sub_config.font_file)
+            
+            if font_name:
+                # Use extracted font family name (e.g., "Rocline Personal Use Only")
+                force_style_parts.insert(0, f"FontName={font_name}")
+                
+                # Also provide font directory for FFmpeg to find the font
+                font_path_obj = Path(sub_config.font_file)
+                font_dir = str(font_path_obj.parent).replace('\\', '/')
+                
+                print(f"✓ Using font: {font_name} from {sub_config.font_file}")
+            else:
+                print(f"✗ Failed to extract font name from {sub_config.font_file}")
         
         force_style = ','.join(force_style_parts)
         
@@ -863,7 +992,13 @@ class FFmpegBuilder:
         escaped_path = str(srt_to_use).replace('\\', '/').replace(':', '\\:')
         
         # Build subtitles filter
-        subtitle_filter = f"subtitles='{escaped_path}':force_style='{force_style}'"
+        if font_dir:
+            # Use fontsdir parameter to specify font directory
+            escaped_font_dir = font_dir.replace(':', '\\:')
+            subtitle_filter = f"subtitles='{escaped_path}':fontsdir='{escaped_font_dir}':force_style='{force_style}'"
+        else:
+            # No custom font, use system default
+            subtitle_filter = f"subtitles='{escaped_path}':force_style='{force_style}'"
         
         return subtitle_filter
     
@@ -1530,7 +1665,12 @@ class FFmpegBuilder:
                 if overlay_config.enabled and overlay_config.filepath:
                     # Apply input looping if configured
                     if overlay_config.loop:
+                        # Add -t before -i to limit input duration at input level.
+                        # This prevents FFmpeg from buffering infinite frames when
+                        # stream_loop is combined with concat (cover video switch causes OOM).
                         cmd.extend(['-stream_loop', '-1'])
+                        if total_video_duration > 0:
+                            cmd.extend(['-t', str(total_video_duration)])
                         
                     cmd.extend(['-i', overlay_config.filepath])
                     overlay_input_indices.append(next_input_idx)
@@ -1630,9 +1770,9 @@ class FFmpegBuilder:
                     # Apply trim to target duration to ensure it matches audio duration exactly
                     # This handles:
                     # 1. Trimming if overlay > target (e.g. 15m overlay on 10m audio)
-                    # 2. Preventing infinite loop if -stream_loop is used
-                    # 3. Looping is handled by -stream_loop on input side (if enabled)
-                    if total_video_duration > 0:
+                    # Note: For looped overlays, -t is already set at input level to prevent OOM.
+                    # trim here is only a safety net for non-looped overlays that may be too long.
+                    if total_video_duration > 0 and not overlay_config.loop:
                         xfade_filters.append(f"{input_stream}trim=duration={total_video_duration}:start=0,setpts=PTS-STARTPTS[ck{idx}_trimmed]")
                         current_overlay = f"[ck{idx}_trimmed]"
                     else:
@@ -1661,14 +1801,32 @@ class FFmpegBuilder:
                     if overlay_config.blend_mode != BlendMode.NORMAL:
                         blend_mode = overlay_config.blend_mode.value
                         
-                        # For blend mode with positioning:
-                        # Create transparent canvas and position overlay on it, then blend
+                        # Get position coordinates
                         overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
                         
-                        xfade_filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}:d={total_video_duration}[canvas{idx}]")
-                        xfade_filters.append(f"[canvas{idx}]{current_overlay}{overlay_pos}[positioned{idx}]")
-                        xfade_filters.append(f"{current_output}[positioned{idx}]blend=all_mode={blend_mode}[ck{idx}]")
-                        current_output = f"[ck{idx}]"
+                        # For Screen/Lighten/Dodge/Glow modes with black background:
+                        # SIMPLEST & MOST RELIABLE: Remove black with lumakey, then normal overlay
+                        if blend_mode in ['screen', 'lighten', 'dodge', 'glow']:
+                            # Remove black/dark background using lumakey
+                            xfade_filters.append(f"{current_overlay}lumakey=threshold=0.05:tolerance=0.05:softness=0.05[ck{idx}_keyed]")
+                            
+                            # Normal overlay with alpha (no blend filter)
+                            xfade_filters.append(f"{current_output}[ck{idx}_keyed]{overlay_pos}[ck{idx}]")
+                            current_output = f"[ck{idx}]"
+                        else:
+                            # Other blend modes: use standard flow with yuva420p
+                            # Ensure overlay has proper pixel format with alpha (yuva420p)
+                            xfade_filters.append(f"{current_overlay}format=yuva420p[ck{idx}_formatted]")
+                            
+                            # Create transparent canvas with proper format
+                            xfade_filters.append(f"color=c=black@0.0:s={export_settings.width}x{export_settings.height}:d={total_video_duration},format=yuva420p[canvas{idx}]")
+                            
+                            # Overlay positioned content onto canvas (preserves alpha)
+                            xfade_filters.append(f"[canvas{idx}][ck{idx}_formatted]{overlay_pos}[positioned{idx}]")
+                            
+                            # Blend canvas with video with proper alpha handling
+                            xfade_filters.append(f"{current_output}[positioned{idx}]blend=all_mode={blend_mode}:all_opacity=1[ck{idx}]")
+                            current_output = f"[ck{idx}]"
                     else:
                         # Normal overlay (with position)
                         overlay_pos = overlay_config.get_overlay_filter(export_settings.width, export_settings.height)
@@ -1855,9 +2013,17 @@ class FFmpegBuilder:
             self._add_filter_complex(cmd, ";".join(scaled_filters))
             cmd.extend(['-map', '[vout]'])
             
-            # Encoding settings for intermediate
-            # High quality, no audio
-            cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-an'])
+            # Encoding settings for intermediate chunks
+            # Use very high bitrate to preserve quality for final pass
+            # This ensures NVENC can reach target bitrate in final render
+            cmd.extend([
+                '-c:v', 'libx264', 
+                '-preset', 'ultrafast',
+                '-b:v', '50000k',  # Very high bitrate for intermediate
+                '-maxrate', '50000k',
+                '-bufsize', '100000k',
+                '-an'
+            ])
             cmd.append(temp_output.name)
             
         # Execute chunk render
@@ -1912,6 +2078,7 @@ class FFmpegBuilder:
         if has_cover and video_durations:
             first_video, first_duration = video_durations[0]
             concat_content.append(f"file '{first_video}'")
+            concat_content.append(f"duration {first_duration:.6f}")
             current_duration += first_duration
             video_index = 1
         
@@ -1926,6 +2093,7 @@ class FFmpegBuilder:
             
             video, duration = video_durations[video_index]
             concat_content.append(f"file '{video}'")
+            concat_content.append(f"duration {duration:.6f}")
             current_duration += duration
             video_index += 1
         
@@ -1938,6 +2106,9 @@ class FFmpegBuilder:
         )
         concat_file.write('\n'.join(concat_content))
         concat_file.close()
+        
+        print(f"[CONCAT] Created concat file: {concat_file.name}")
+        print(f"[CONCAT] Entries: {len([l for l in concat_content if l.startswith('file')])}, calculated duration: {current_duration:.2f}s, target: {target_duration:.2f}s")
         
         self._temp_files.append(concat_file.name)
         return concat_file.name
@@ -1954,14 +2125,14 @@ class FFmpegBuilder:
             return options
         
         elif method == EncodingMethod.NVENC:
-            # NVIDIA GPU Fast encoding
+            # NVIDIA GPU Fast encoding with CBR (respects bitrate setting)
             options.extend(['-c:v', 'h264_nvenc'])
-            options.extend(['-preset', 'p4'])  # Fast preset
+            options.extend(['-preset', 'p4'])  # Fast preset (speed ~4-5x)
             options.extend(['-tune', 'hq'])
-            options.extend(['-rc', 'vbr'])
-            options.extend(['-cq', '23'])
+            options.extend(['-rc', 'cbr'])  # CBR for strict bitrate control
+            # Note: No -cq parameter - CBR mode respects user's bitrate exactly
             options.extend(['-b:v', f'{export_settings.bitrate_kbps}k'])
-            options.extend(['-maxrate', f'{int(export_settings.bitrate_kbps * 1.5)}k'])
+            options.extend(['-maxrate', f'{export_settings.bitrate_kbps}k'])  # Same as bitrate for strict CBR
             options.extend(['-bufsize', f'{export_settings.bitrate_kbps * 2}k'])
             # Keyframe interval for streaming (2 seconds)
             options.extend(['-g', str(export_settings.fps * 2)])
@@ -2139,6 +2310,68 @@ class FFmpegBuilder:
             except OSError:
                 pass
         self._temp_files = []
+    
+    def _calculate_overlay_position(
+        self,
+        position: 'OverlayPosition',
+        video_width: int,
+        video_height: int,
+        overlay_width: int,
+        x_offset: int,
+        y_offset: int
+    ) -> tuple:
+        """
+        Calculate X and Y coordinates for overlay positioning.
+        
+        Args:
+            position: OverlayPosition enum value
+            video_width: Video width in pixels
+            video_height: Video height in pixels
+            overlay_width: Overlay width in pixels (calculated from size_percent)
+            x_offset: X offset from position anchor
+            y_offset: Y offset from position anchor
+            
+        Returns:
+            Tuple of (x_position, y_position) as integers
+        """
+        from core.media_manager import OverlayPosition
+        
+        # Assume overlay height maintains aspect ratio (will be calculated by FFmpeg)
+        # For positioning calculation, we use overlay_width as reference
+        
+        if position == OverlayPosition.TOP_LEFT:
+            x = x_offset
+            y = y_offset
+        elif position == OverlayPosition.TOP_CENTER:
+            x = (video_width - overlay_width) // 2 + x_offset
+            y = y_offset
+        elif position == OverlayPosition.TOP_RIGHT:
+            x = video_width - overlay_width - x_offset
+            y = y_offset
+        elif position == OverlayPosition.CENTER_LEFT:
+            x = x_offset
+            y = (video_height // 2) + y_offset  # Note: overlay_height unknown, approximate
+        elif position == OverlayPosition.CENTER:
+            x = (video_width - overlay_width) // 2 + x_offset
+            y = (video_height // 2) + y_offset
+        elif position == OverlayPosition.CENTER_RIGHT:
+            x = video_width - overlay_width - x_offset
+            y = (video_height // 2) + y_offset
+        elif position == OverlayPosition.BOTTOM_LEFT:
+            x = x_offset
+            y = video_height - y_offset  # Will be adjusted by FFmpeg based on actual overlay height
+        elif position == OverlayPosition.BOTTOM_CENTER:
+            x = (video_width - overlay_width) // 2 + x_offset
+            y = video_height - y_offset
+        elif position == OverlayPosition.BOTTOM_RIGHT:
+            x = video_width - overlay_width - x_offset
+            y = video_height - y_offset
+        else:
+            # Default to bottom left
+            x = x_offset
+            y = video_height - y_offset
+        
+        return (x, y)
     
     @staticmethod
     def get_preset_settings(preset_name: str) -> ExportSettings:

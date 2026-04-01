@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
-from core.media_manager import LogoOverlay, TextOverlay, AudioVisualizerConfig, SubtitleConfig, OverlayPosition, VisualizerStyle
+from core.media_manager import LogoOverlay, TextOverlay, NowPlayingConfig, AudioVisualizerConfig, SubtitleConfig, OverlayPosition, VisualizerStyle
 
 
 class EffectsPanel(QWidget):
@@ -23,6 +23,7 @@ class EffectsPanel(QWidget):
         super().__init__(parent)
         self._logo_overlay = LogoOverlay()
         self._text_overlay = TextOverlay()
+        self._now_playing_config = NowPlayingConfig()
         self._audio_visualizer = AudioVisualizerConfig()
         self._subtitle_config = SubtitleConfig()
         self._setup_ui()
@@ -46,6 +47,10 @@ class EffectsPanel(QWidget):
         # Text overlay section
         text_group = self._create_text_section()
         layout.addWidget(text_group)
+        
+        # Now Playing section (judul lagu dari nama file, sesuai urutan audio)
+        now_playing_group = self._create_now_playing_section()
+        layout.addWidget(now_playing_group)
         
         # Audio visualizer section
         viz_group = self._create_visualizer_section()
@@ -119,7 +124,7 @@ class EffectsPanel(QWidget):
         
         self._logo_position_combo = QComboBox()
         self._logo_position_combo.addItems([
-            "Top Left", "Top Right", "Bottom Left", "Bottom Right", "Center", "Custom"
+            "Top Left", "Top Right", "Bottom Left", "Bottom Right", "Bottom Center", "Center", "Custom"
         ])
         self._logo_position_combo.setCurrentIndex(1)  # Top Right
         self._logo_position_combo.currentIndexChanged.connect(self._on_logo_position_changed)
@@ -270,6 +275,144 @@ class EffectsPanel(QWidget):
         self._text_content.setEnabled(False)
         layout.addWidget(self._text_content)
         
+        return group
+    
+    def _create_now_playing_section(self) -> QGroupBox:
+        """Create the Now Playing (judul lagu dari nama file) section."""
+        group = QGroupBox("NOW PLAYING (Judul Lagu)")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(12)
+        
+        self._np_enabled_cb = QCheckBox("Tampilkan judul lagu (dari nama file, sesuai urutan audio)")
+        self._np_enabled_cb.setToolTip(
+            "Saat export, teks \"now playing\" menampilkan nama file audio yang sedang diputar.\n"
+            "Urutan mengikuti urutan file audio yang dipilih."
+        )
+        self._np_enabled_cb.stateChanged.connect(self._on_now_playing_enabled_changed)
+        layout.addWidget(self._np_enabled_cb)
+        
+        self._np_content = QWidget()
+        np_layout = QVBoxLayout(self._np_content)
+        np_layout.setContentsMargins(0, 0, 0, 0)
+        np_layout.setSpacing(8)
+        
+        font_label = QLabel("Font (Opsional):")
+        np_layout.addWidget(font_label)
+        font_row = QHBoxLayout()
+        self._np_font_edit = QLineEdit()
+        self._np_font_edit.setPlaceholderText("Pilih file font TTF...")
+        self._np_font_edit.setReadOnly(True)
+        font_row.addWidget(self._np_font_edit)
+        font_btn = QPushButton("Browse...")
+        font_btn.setFixedWidth(100)
+        font_btn.clicked.connect(self._browse_now_playing_font)
+        font_row.addWidget(font_btn)
+        np_layout.addLayout(font_row)
+        
+        size_row = QHBoxLayout()
+        size_row.addWidget(QLabel("Ukuran Font:"))
+        self._np_font_size_spin = QSpinBox()
+        self._np_font_size_spin.setRange(12, 120)
+        self._np_font_size_spin.setValue(36)
+        self._np_font_size_spin.valueChanged.connect(self._emit_settings_changed)
+        size_row.addWidget(self._np_font_size_spin)
+        size_row.addStretch()
+        np_layout.addLayout(size_row)
+        
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("Warna:"))
+        self._np_color_btn = QPushButton()
+        self._np_color_btn.setFixedSize(80, 30)
+        self._np_color_btn.setStyleSheet("background-color: white; border: 1px solid #0f3460;")
+        self._np_color_btn.clicked.connect(self._pick_now_playing_color)
+        self._np_font_color = "white"
+        color_row.addWidget(self._np_color_btn)
+        self._np_color_edit = QLineEdit("white")
+        self._np_color_edit.setFixedWidth(100)
+        self._np_color_edit.textChanged.connect(self._on_now_playing_color_changed)
+        color_row.addWidget(self._np_color_edit)
+        color_row.addStretch()
+        np_layout.addLayout(color_row)
+        
+        pos_label = QLabel("Posisi:")
+        np_layout.addWidget(pos_label)
+        self._np_position_combo = QComboBox()
+        self._np_position_combo.addItems([
+            "Top Left", "Top Center", "Top Right",
+            "Bottom Left", "Bottom Center", "Bottom Right",
+            "Center", "Custom"
+        ])
+        self._np_position_combo.setCurrentIndex(4)  # Bottom Center
+        self._np_position_combo.currentIndexChanged.connect(self._emit_settings_changed)
+        np_layout.addWidget(self._np_position_combo)
+        
+        offset_label = QLabel("Offset (X, Y):")
+        np_layout.addWidget(offset_label)
+        offset_row = QHBoxLayout()
+        offset_row.addWidget(QLabel("X:"))
+        self._np_x_spin = QSpinBox()
+        self._np_x_spin.setRange(-500, 500)
+        self._np_x_spin.setValue(0)
+        self._np_x_spin.valueChanged.connect(self._emit_settings_changed)
+        offset_row.addWidget(self._np_x_spin)
+        offset_row.addWidget(QLabel("Y:"))
+        self._np_y_spin = QSpinBox()
+        self._np_y_spin.setRange(0, 500)
+        self._np_y_spin.setValue(40)
+        self._np_y_spin.valueChanged.connect(self._emit_settings_changed)
+        offset_row.addWidget(self._np_y_spin)
+        offset_row.addStretch()
+        np_layout.addLayout(offset_row)
+        
+        # Mulai tampil setelah (untuk cover video: misal cover 10 detik → set 11)
+        start_label = QLabel("Now Playing mulai muncul setelah:")
+        start_label.setToolTip(
+            "Misal ada cover video 10 detik, set Jam=0 Menit=0 Detik=11 agar judul lagu baru muncul dari detik 11."
+        )
+        np_layout.addWidget(start_label)
+        start_row = QHBoxLayout()
+        start_row.addWidget(QLabel("Jam:"))
+        self._np_start_h = QSpinBox()
+        self._np_start_h.setRange(0, 23)
+        self._np_start_h.setValue(0)
+        self._np_start_h.valueChanged.connect(self._on_np_start_time_changed)
+        start_row.addWidget(self._np_start_h)
+        start_row.addWidget(QLabel("Menit:"))
+        self._np_start_m = QSpinBox()
+        self._np_start_m.setRange(0, 59)
+        self._np_start_m.setValue(0)
+        self._np_start_m.valueChanged.connect(self._on_np_start_time_changed)
+        start_row.addWidget(self._np_start_m)
+        start_row.addWidget(QLabel("Detik:"))
+        self._np_start_s = QSpinBox()
+        self._np_start_s.setRange(0, 59)
+        self._np_start_s.setValue(0)
+        self._np_start_s.valueChanged.connect(self._on_np_start_time_changed)
+        start_row.addWidget(self._np_start_s)
+        self._np_start_total_label = QLabel("(= 0 detik)")
+        self._np_start_total_label.setStyleSheet("color: #8892b0; font-size: 11px;")
+        start_row.addWidget(self._np_start_total_label)
+        start_row.addStretch()
+        np_layout.addLayout(start_row)
+        
+        preview_btn = QPushButton("👁 Preview Posisi & Font")
+        preview_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #00d4ff;
+                color: #0a0a14;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 15px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #00b8e6; }
+        """)
+        preview_btn.clicked.connect(self._on_now_playing_preview_requested)
+        np_layout.addWidget(preview_btn)
+        
+        self._np_content.setEnabled(False)
+        layout.addWidget(self._np_content)
         return group
     
     def _create_visualizer_section(self) -> QGroupBox:
@@ -640,6 +783,92 @@ class EffectsPanel(QWidget):
         self._text_overlay.enabled = enabled
         self.settings_changed.emit()
     
+    def _on_now_playing_enabled_changed(self, state: int) -> None:
+        """Handle Now Playing enabled state change."""
+        enabled = state == Qt.CheckState.Checked.value
+        self._np_content.setEnabled(enabled)
+        self._now_playing_config.enabled = enabled
+        self.settings_changed.emit()
+    
+    def _browse_now_playing_font(self) -> None:
+        """Browse for Now Playing font file."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Pilih Font", "", "Font Files (*.ttf *.otf)"
+        )
+        if filepath:
+            self._np_font_edit.setText(filepath)
+            self._now_playing_config.font_file = filepath
+            self.settings_changed.emit()
+    
+    def _pick_now_playing_color(self) -> None:
+        """Open color picker for Now Playing text."""
+        color = QColorDialog.getColor(QColor(self._np_font_color), self, "Pilih Warna Teks")
+        if color.isValid():
+            self._np_font_color = color.name()
+            self._np_color_btn.setStyleSheet(
+                f"background-color: {self._np_font_color}; border: 1px solid #0f3460;"
+            )
+            self._np_color_edit.setText(self._np_font_color)
+            self._now_playing_config.font_color = self._np_font_color
+            self.settings_changed.emit()
+    
+    def _on_now_playing_color_changed(self, text: str) -> None:
+        """Handle Now Playing color text change."""
+        self._np_font_color = text
+        self._now_playing_config.font_color = text
+        try:
+            self._np_color_btn.setStyleSheet(
+                f"background-color: {text}; border: 1px solid #0f3460;"
+            )
+        except Exception:
+            pass
+        self.settings_changed.emit()
+    
+    def _on_np_start_time_changed(self) -> None:
+        """Update start offset from Jam/Menit/Detik and refresh label."""
+        total = self._np_start_h.value() * 3600 + self._np_start_m.value() * 60 + self._np_start_s.value()
+        self._now_playing_config.start_offset_seconds = float(total)
+        if total == 0:
+            self._np_start_total_label.setText("(= 0 detik)")
+        elif total < 60:
+            self._np_start_total_label.setText(f"(= {total} detik)")
+        elif total < 3600:
+            m, s = divmod(total, 60)
+            self._np_start_total_label.setText(f"(= {m} m {s} d)")
+        else:
+            h, r = divmod(total, 3600)
+            m, s = divmod(r, 60)
+            self._np_start_total_label.setText(f"(= {h} j {m} m {s} d)")
+        self.settings_changed.emit()
+    
+    def _on_now_playing_preview_requested(self) -> None:
+        """Open Now Playing preview dialog."""
+        self._update_now_playing_config_from_ui()
+        from ui.now_playing_preview_dialog import NowPlayingPreviewDialog
+        sample = []
+        if hasattr(self, '_get_sample_audio_titles') and callable(self._get_sample_audio_titles):
+            sample = self._get_sample_audio_titles()
+        dialog = NowPlayingPreviewDialog(self._now_playing_config, sample_titles=sample or None, parent=self)
+        dialog.exec()
+    
+    def _update_now_playing_config_from_ui(self) -> None:
+        """Sync Now Playing config from UI."""
+        self._now_playing_config.enabled = self._np_enabled_cb.isChecked()
+        self._now_playing_config.font_file = self._np_font_edit.text()
+        self._now_playing_config.font_size = self._np_font_size_spin.value()
+        self._now_playing_config.font_color = self._np_color_edit.text()
+        self._now_playing_config.x_offset = self._np_x_spin.value()
+        self._now_playing_config.y_offset = self._np_y_spin.value()
+        self._now_playing_config.start_offset_seconds = float(
+            self._np_start_h.value() * 3600 + self._np_start_m.value() * 60 + self._np_start_s.value()
+        )
+        np_positions = [
+            OverlayPosition.TOP_LEFT, OverlayPosition.TOP_CENTER, OverlayPosition.TOP_RIGHT,
+            OverlayPosition.BOTTOM_LEFT, OverlayPosition.BOTTOM_CENTER, OverlayPosition.BOTTOM_RIGHT,
+            OverlayPosition.CENTER, OverlayPosition.CUSTOM
+        ]
+        self._now_playing_config.position = np_positions[self._np_position_combo.currentIndex()]
+    
     def _browse_logo(self) -> None:
         """Browse for logo image."""
         filepath, _ = QFileDialog.getOpenFileName(
@@ -675,6 +904,7 @@ class EffectsPanel(QWidget):
             OverlayPosition.TOP_RIGHT,
             OverlayPosition.BOTTOM_LEFT,
             OverlayPosition.BOTTOM_RIGHT,
+            OverlayPosition.BOTTOM_CENTER,
             OverlayPosition.CENTER,
             OverlayPosition.CUSTOM
         ]
@@ -918,9 +1148,13 @@ class EffectsPanel(QWidget):
         # Update subtitle config from UI
         self._update_subtitle_config_from_ui()
         
+        # Update Now Playing config from UI
+        self._update_now_playing_config_from_ui()
+        
         return {
             'logo_overlay': self._logo_overlay,
             'text_overlay': self._text_overlay,
+            'now_playing_config': self._now_playing_config,
             'audio_visualizer': self._audio_visualizer,
             'subtitle_config': self._subtitle_config,
         }
@@ -951,6 +1185,38 @@ class EffectsPanel(QWidget):
             self._text_x_spin.setValue(text.x_offset)
             self._text_y_spin.setValue(text.y_offset)
             self._text_overlay = text
+        
+        if 'now_playing_config' in settings:
+            np = settings['now_playing_config']
+            self._np_enabled_cb.setChecked(np.enabled)
+            self._np_font_edit.setText(np.font_file)
+            self._np_font_size_spin.setValue(np.font_size)
+            self._np_color_edit.setText(np.font_color)
+            self._np_x_spin.setValue(np.x_offset)
+            self._np_y_spin.setValue(np.y_offset)
+            total_sec = int(getattr(np, 'start_offset_seconds', 0) or 0)
+            total_sec = max(0, min(total_sec, 24 * 3600 - 1))  # clamp to 0..23:59:59
+            self._np_start_h.blockSignals(True)
+            self._np_start_m.blockSignals(True)
+            self._np_start_s.blockSignals(True)
+            self._np_start_h.setValue(total_sec // 3600)
+            self._np_start_m.setValue((total_sec % 3600) // 60)
+            self._np_start_s.setValue(total_sec % 60)
+            self._np_start_h.blockSignals(False)
+            self._np_start_m.blockSignals(False)
+            self._np_start_s.blockSignals(False)
+            self._on_np_start_time_changed()  # update label and config
+            np_positions = [
+                OverlayPosition.TOP_LEFT, OverlayPosition.TOP_CENTER, OverlayPosition.TOP_RIGHT,
+                OverlayPosition.BOTTOM_LEFT, OverlayPosition.BOTTOM_CENTER, OverlayPosition.BOTTOM_RIGHT,
+                OverlayPosition.CENTER, OverlayPosition.CUSTOM
+            ]
+            try:
+                idx = np_positions.index(np.position)
+                self._np_position_combo.setCurrentIndex(idx)
+            except (ValueError, AttributeError):
+                self._np_position_combo.setCurrentIndex(4)
+            self._now_playing_config = np
         
         if 'audio_visualizer' in settings:
             viz = settings['audio_visualizer']

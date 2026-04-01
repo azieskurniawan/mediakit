@@ -201,7 +201,23 @@ class ExportDialog(QDialog):
         self._cancel_btn.clicked.connect(self._on_cancel)
         button_row.addWidget(self._cancel_btn)
         
-        self._export_btn = QPushButton("EXPORT VIDEO")
+        # ADD TO QUEUE button (NEW)
+        self._queue_btn = QPushButton("📋 Add to Queue")
+        self._queue_btn.setFixedHeight(45)
+        self._queue_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF6B00;
+                color: white;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #FF8500;
+            }
+        """)
+        self._queue_btn.clicked.connect(self._add_to_queue)
+        button_row.addWidget(self._queue_btn)
+        
+        self._export_btn = QPushButton("▶ EXPORT NOW")
         self._export_btn.setObjectName("exportButton")
         self._export_btn.setFixedHeight(45)
         self._export_btn.clicked.connect(self._start_export)
@@ -685,6 +701,43 @@ class ExportDialog(QDialog):
                 self, "Export Failed",
                 message
             )
+    
+    def _add_to_queue(self) -> None:
+        """Add current settings to export queue."""
+        from core.queue_manager import QueueManager
+        
+        # Validate settings
+        if not self._validate_settings():
+            return
+        
+        # Get export settings
+        export_settings = self._get_export_settings()
+        if not export_settings:
+            return
+        
+        # Ask for job name
+        from PySide6.QtWidgets import QInputDialog
+        job_name, ok = QInputDialog.getText(
+            self,
+            "Job Name",
+            "Enter a name for this export job:",
+            text=f"Export_{datetime.now().strftime('%H%M%S')}"
+        )
+        
+        if not ok or not job_name:
+            return
+        
+        # Add to queue
+        queue_manager = QueueManager()
+        job = queue_manager.add_job(self._media_config, export_settings, job_name)
+        
+        # Show success message
+        QMessageBox.information(
+            self,
+            "Added to Queue",
+            f"Job '{job.name}' has been added to export queue.\n\n"
+            f"Open Queue Panel to start processing."
+        )
     
     def _on_cancel(self) -> None:
         """Handle cancel button click."""
